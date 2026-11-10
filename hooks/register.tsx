@@ -26,6 +26,7 @@ type RoleDef = {
   id: RoleId
   name: string
   purpose: string
+  short: string
   usedFor: string
   forModel: string
   prompt: string
@@ -39,6 +40,7 @@ const ROLES: RoleDef[] = [
   {
     id: 'advisor',
     name: 'ที่ปรึกษา',
+    short: 'วิเคราะห์ · ออกแบบ · รีวิว',
     purpose: 'คิดก่อนลงมือ: วิเคราะห์ปัญหา ออกแบบ วางแผน รีวิวโค้ด',
     usedFor: 'agent แบบ Plan และงานที่เกี่ยวกับ review / ออกแบบ / วางแผน',
     forModel:
@@ -51,6 +53,7 @@ const ROLES: RoleDef[] = [
   {
     id: 'explorer',
     name: 'นักสำรวจ',
+    short: 'ค้นหา · อ่านโค้ด',
     purpose: 'ค้นหาไฟล์ อ่านโค้ด แล้วสรุปว่าอะไรอยู่ตรงไหน',
     usedFor: 'agent แบบ Explore และงานค้นหา / อ่าน / สรุปโค้ด',
     forModel:
@@ -63,6 +66,7 @@ const ROLES: RoleDef[] = [
   {
     id: 'coder',
     name: 'นักเขียนโค้ด',
+    short: 'เขียน · แก้โค้ด',
     purpose: 'แก้หรือเขียนโค้ดตามแผนที่ตกลงกันแล้ว',
     usedFor: 'agent แบบ general-purpose ที่ไม่เข้า role อื่น',
     forModel:
@@ -74,6 +78,7 @@ const ROLES: RoleDef[] = [
   {
     id: 'runner',
     name: 'ผู้รันงาน',
+    short: 'รันคำสั่ง · เทสต์ · build',
     purpose: 'รันคำสั่ง เทสต์ build lint แล้วสรุปผล',
     usedFor: 'งานที่มีคำว่า test / run / build / lint / รัน / เทสต์',
     forModel:
@@ -121,7 +126,7 @@ const MODEL_OPTS: { value: ModelChoice; label: string }[] = [
   { value: 'inherit', label: 'เหมือน main' },
 ]
 const EFFORT_OPTS: { value: EffortChoice; label: string }[] = [
-  { value: 'default', label: 'ค่าเริ่มต้น' },
+  { value: 'default', label: 'auto' },
   { value: 'low', label: 'low' },
   { value: 'medium', label: 'medium' },
   { value: 'high', label: 'high' },
@@ -130,11 +135,11 @@ const EFFORT_OPTS: { value: EffortChoice; label: string }[] = [
 ]
 const PARALLEL_OPTS = ['0', '1', '2', '3', '4', '6', '8'].map(v => ({
   value: v,
-  label: v === '0' ? 'ไม่จำกัด' : `${v} ตัว`,
+  label: v === '0' ? 'พร้อมกัน: ไม่จำกัด' : `พร้อมกัน: ${v} ตัว`,
 }))
 const SAVER_OPTS = ['0', '50', '70', '80', '90'].map(v => ({
   value: v,
-  label: v === '0' ? 'ปิด' : `เมื่อใช้ไป ${v}%`,
+  label: v === '0' ? 'โหมดประหยัด: ปิด' : `ประหยัดเมื่อ 5 ชม. ≥ ${v}%`,
 }))
 const RANGE_OPTS: { value: HistoryRange; label: string }[] = [
   { value: 'session', label: 'เซสชันนี้' },
@@ -791,79 +796,61 @@ export const register: Register = on => {
       )
     }
 
-    // ----- ตั้งค่า role -----
+    // ----- ตั้งค่า role: แถวละ role กระชับ ๆ -----
     const roles = () => (
-      <Box flexDirection="column">
-        <Box marginTop={1}>
-          <Text dimColor>
-            งานแต่ละแบบให้ model ไหนทำ เช่น ที่ปรึกษาใช้ Opus เพื่อคิดลึก ส่วนงานรันคำสั่งใช้ Haiku เพื่อเร็วและประหยัด
-          </Text>
-        </Box>
-        {ROLES.map(def => {
-          const rule = cfg.roles[def.id]
-          return (
-            <Box
-              key={`card:${def.id}`}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={rule.enabled ? 'promptBorder' : 'inactive'}
-              paddingX={1}
-              marginTop={1}
-            >
-              <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
-                <Text bold dimColor={!rule.enabled}>
-                  {def.name}
-                  {!rule.enabled && <Text color="inactive"> (ไม่ใช้)</Text>}
-                </Text>
-                <Button key={`en:${def.id}`} dimColor onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
-                  {rule.enabled ? 'ไม่ใช้ role นี้' : 'ใช้ role นี้'}
-                </Button>
-              </Box>
-              <Text dimColor>{def.purpose}</Text>
-              {rule.enabled && (
-                <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-                  <Select
-                    key={`model:${def.id}`}
-                    label="Model"
-                    options={MODEL_OPTS}
-                    value={rule.model}
-                    onSelect={v => setRole($, def.id, { model: v as ModelChoice })}
-                  />
-                  <Select
-                    key={`effort:${def.id}`}
-                    label="ความลึกในการคิด"
-                    options={EFFORT_OPTS}
-                    value={rule.effort}
-                    onSelect={v => setRole($, def.id, { effort: v as EffortChoice })}
-                  />
+      <Box flexDirection="column" marginTop={1}>
+        <Text dimColor>กดชื่อ role เพื่อเปิด/ปิด · เลือก model และ effort ทางขวา</Text>
+        <Box flexDirection="column" gap={1} marginTop={1}>
+          {ROLES.map(def => {
+            const rule = cfg.roles[def.id]
+            return (
+              <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1} flexWrap="wrap">
+                <Box width={18} flexShrink={0} flexDirection="column">
+                  <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
+                    <Text color={rule.enabled ? 'success' : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
+                    <Text bold={rule.enabled} dimColor={!rule.enabled}> {def.name}</Text>
+                  </Button>
+                  <Text dimColor>  {def.short}</Text>
                 </Box>
-              )}
-              <Text dimColor>ใช้กับ: {def.usedFor}</Text>
-            </Box>
-          )
-        })}
+                {rule.enabled ? (
+                  <Box flexDirection="row" gap={1}>
+                    <Select
+                      key={`model:${def.id}`}
+                      options={MODEL_OPTS}
+                      value={rule.model}
+                      onSelect={v => setRole($, def.id, { model: v as ModelChoice })}
+                    />
+                    <Select
+                      key={`effort:${def.id}`}
+                      options={EFFORT_OPTS}
+                      value={rule.effort}
+                      onSelect={v => setRole($, def.id, { effort: v as EffortChoice })}
+                    />
+                  </Box>
+                ) : (
+                  <Text dimColor>ไม่ใช้</Text>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
 
-        {heading('ควบคุมการใช้ usage')}
-        <Box flexDirection="column" marginTop={1}>
+        {heading('ขีดจำกัด')}
+        <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
           <Select
             key="saver"
-            label="โหมดประหยัด"
             options={SAVER_OPTS}
             value={String(cfg.saverAt)}
             onSelect={v => setConfig($, c => ({ ...c, saverAt: Number(v) }))}
           />
-          <Text dimColor>เมื่อ usage 5 ชั่วโมงถึงระดับนี้ ทุก role จะเปลี่ยนไปใช้ Haiku 5.5 ชั่วคราว</Text>
-        </Box>
-        <Box flexDirection="column" marginTop={1}>
           <Select
             key="maxParallel"
-            label="ทำงานพร้อมกันสูงสุด"
             options={PARALLEL_OPTS}
             value={String(cfg.maxParallel)}
             onSelect={v => setConfig($, c => ({ ...c, maxParallel: Number(v) }))}
           />
-          <Text dimColor>จำกัดจำนวน sub-agent ที่รันพร้อมกัน กันไม่ให้ usage พุ่งเร็ว</Text>
         </Box>
+        <Text dimColor>โหมดประหยัด: ทุก role เปลี่ยนเป็น Haiku เมื่อ usage ถึงระดับที่เลือก</Text>
         <Box marginTop={1}>
           <Button
             key="reset"
@@ -876,9 +863,6 @@ export const register: Register = on => {
             คืนค่าเริ่มต้น
           </Button>
         </Box>
-        <Text dimColor>
-          ความลึกในการคิดมีผลเมื่อ Claude เรียก role ของ mod นี้โดยตรง ส่วน agent ในตัว (Explore, Plan, general-purpose) จะถูกเปลี่ยนแค่ model ตาม role ที่ตรงกัน
-        </Text>
       </Box>
     )
 
