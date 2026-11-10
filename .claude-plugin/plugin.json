@@ -1,0 +1,6 @@
+{
+  "name": "subagent-control",
+  "version": "0.1.0",
+  "description": "Pane 4 แท็บ: เปิด/ปิด sub-agents, ตั้ง model ต่อประเภท, ประวัติ token รายตัว, usage และ account",
+  "types": "./types/index.d.ts"
+}
