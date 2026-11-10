@@ -555,12 +555,20 @@ export const register: Register = on => {
           <Text bold> Sub-agents</Text>
           <Text dimColor> · {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
         </Text>
-        <Button key="band:toggle" dimColor onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}>
+        <Button
+          key="band:toggle"
+          variant={cfg.enabled ? 'secondary' : 'primary'}
+          dimColor={cfg.enabled}
+          onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}>
           {cfg.enabled ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
         </Button>
         {five && <Text dimColor>· usage 5 ชม. {Math.round(five.percent)}%</Text>}
-        <Button key="band:pane" dimColor onPress={() => (paneOpen ? closePane($) : openPane($))}>
-          {paneOpen ? 'ซ่อนแผง' : 'แสดงแผง'}
+        <Button
+          key="band:pane"
+          variant={paneOpen ? 'secondary' : 'primary'}
+          dimColor={paneOpen}
+          onPress={() => (paneOpen ? closePane($) : openPane($))}>
+          {paneOpen ? 'ซ่อน' : 'แสดง'}
         </Button>
       </Box>
     )
@@ -580,7 +588,6 @@ export const register: Register = on => {
     const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 50
     const barW = Math.max(8, Math.min(20, cols - 22))
     const live = runs.filter(r => isLive(r, now))
-    const activeRoles = ROLES.filter(r => cfg.roles[r.id].enabled).length
 
     const heading = (title: string, hint?: string) => (
       <Box flexDirection="column" marginTop={2}>
@@ -607,12 +614,7 @@ export const register: Register = on => {
 
     // การ์ดสถานะ: บอกสถานะชัด ๆ แยกจากปุ่มที่ใช้สั่ง
     const status = (
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={cfg.enabled ? 'success' : 'inactive'}
-        paddingX={1}
-      >
+      <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
           <Text>
             <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
@@ -621,16 +623,13 @@ export const register: Register = on => {
           <Button
             key="master"
             variant={cfg.enabled ? 'secondary' : 'primary'}
+            dimColor={cfg.enabled}
             onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}
           >
             {cfg.enabled ? 'ปิด sub-agents' : 'เปิด sub-agents'}
           </Button>
         </Box>
-        <Text dimColor>
-          {cfg.enabled
-            ? `Claude แตกงานให้ sub-agent ได้ ตาม ${activeRoles} role ที่ตั้งไว้${live.length ? ` · ทำงานอยู่ ${live.length} ตัว` : ''}`
-            : 'Claude จะทำทุกอย่างเองใน thread หลัก ไม่แตก sub-agent'}
-        </Text>
+        {cfg.enabled && live.length > 0 && <Text dimColor>ทำงานอยู่ {live.length} ตัว</Text>}
       </Box>
     )
 
@@ -639,7 +638,7 @@ export const register: Register = on => {
         {(
           [
             { id: 'overview', label: 'ภาพรวม', hotkey: '1' },
-            { id: 'roles', label: 'ตั้งค่า role', hotkey: '2' },
+            { id: 'roles', label: 'ตั้งค่า', hotkey: '2' },
           ] as const
         ).map(t => (
           <Button
@@ -721,11 +720,10 @@ export const register: Register = on => {
               )}
           </Box>
 
-          {heading('การใช้ sub-agent')}
-          <Box marginTop={1}>
+          <Box flexDirection="row" alignItems="center" gap={1} marginTop={2}>
+            <Text bold>การใช้ sub-agent</Text>
             <Select
               key="range"
-              label="ช่วง"
               options={RANGE_OPTS}
               value={range}
               onSelect={v => update($, rangeAtom, () => v as HistoryRange)}
@@ -799,18 +797,16 @@ export const register: Register = on => {
     // ----- ตั้งค่า role: แถวละ role กระชับ ๆ -----
     const roles = () => (
       <Box flexDirection="column" marginTop={1}>
-        <Text dimColor>กดชื่อ role เพื่อเปิด/ปิด · เลือก model และ effort ทางขวา</Text>
-        <Box flexDirection="column" gap={1} marginTop={1}>
+        <Box flexDirection="column" gap={1}>
           {ROLES.map(def => {
             const rule = cfg.roles[def.id]
             return (
-              <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1} flexWrap="wrap">
-                <Box width={18} flexShrink={0} flexDirection="column">
+              <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1}>
+                <Box width={14} flexShrink={0}>
                   <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
                     <Text color={rule.enabled ? 'success' : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
                     <Text bold={rule.enabled} dimColor={!rule.enabled}> {def.name}</Text>
                   </Button>
-                  <Text dimColor>  {def.short}</Text>
                 </Box>
                 {rule.enabled ? (
                   <Box flexDirection="row" gap={1}>
