@@ -38,6 +38,8 @@ test('ปิด sub-agents แล้วสถานะชัด และ spawn 
 
     const res = await $.agent.spawn(spawnArgs('Explore', 'ค้นไฟล์'))
     expect(res.deny).toBeDefined()
+    await ui.press({ key: 'tab:overview' }).catch(() => undefined)
+    expect(await ui.find({ type: 'Text', text: /ถูกบล็อก/ })).toBeUndefined()
     expect(spawned).toBe(0)
 
     await ui.press({ key: 'master' })

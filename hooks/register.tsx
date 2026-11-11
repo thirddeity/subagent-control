@@ -498,10 +498,8 @@ export const register: Register = on => {
       turns: 0,
       durationMs: 0,
     }
-    const deny = async (reason: string) => {
-      await setRuns($, runs => [...runs, { ...base, agentId: `denied-${now}`, endedAt: now, status: 'denied', denyReason: reason }])
-      return { deny: reason }
-    }
+    // บล็อกแล้วไม่บันทึกลงประวัติ (ผู้ใช้ไม่ต้องการเห็น) — Claude ยังได้เหตุผลไปทำเองต่อ
+    const deny = async (reason: string) => ({ deny: reason })
 
     if (!cfg.enabled) return deny('ผู้ใช้ปิด sub-agents ไว้ ให้ทำงานนี้เองใน thread หลัก')
     if (role && rule && !rule.enabled && e.subagentType.startsWith(AGENT_PREFIX)) {
@@ -701,8 +699,9 @@ export const register: Register = on => {
       const startOfToday = new Date(new Date(now).toDateString()).getTime()
       const from =
         range === 'session' ? usage.startedAt : range === 'today' ? startOfToday : range === 'week' ? now - 7 * 86_400_000 : 0
-      const list = runs.filter(r => r.startedAt >= from)
-      const counted = list.filter(r => r.status !== 'denied')
+      // ตัดรายการที่ถูกบล็อก (ของเก่าที่เคยบันทึกไว้) ออกจากทุกส่วนของแผง
+      const list = runs.filter(r => r.startedAt >= from && r.status !== 'denied')
+      const counted = list
       const byRole = new Map<string, { n: number; tok: number; models: Set<string> }>()
       for (const r of counted) {
         const k = roleLabel(r.role)
@@ -773,7 +772,6 @@ export const register: Register = on => {
           </Box>
           <Text>
             {counted.length} ครั้ง · {fmtTok(counted.reduce((s, r) => s + totalTok(r), 0))} tokens
-            {list.length > counted.length && <Text dimColor> · ถูกบล็อก {list.length - counted.length}</Text>}
           </Text>
           {roleRows.length > 0 && (
             <Box flexDirection="column" gap={1} marginTop={1}>
@@ -798,7 +796,7 @@ export const register: Register = on => {
                   </Text>
                   <Text bold>{roleLabel(r.role)}</Text>
                   <Text dimColor> · {modelName(r.model)}</Text>
-                  <Text color={st === 'running' ? 'suggestion' : st === 'done' ? 'success' : st === 'denied' || st === 'failed' ? 'error' : 'inactive'}>
+                  <Text color={st === 'running' ? 'suggestion' : st === 'done' ? 'success' : st === 'failed' ? 'error' : 'inactive'}>
                     {' '}
                     {STATUS_LABEL[st]}
                   </Text>
@@ -809,9 +807,7 @@ export const register: Register = on => {
                 </Text>
                 <Text dimColor>
                   {'      '}
-                  {st === 'denied'
-                    ? r.denyReason
-                    : `${fmtTok(totalTok(r))} tokens (in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}) · ${fmtDur(r.durationMs || (live ? now - r.startedAt : 0))}`}
+                  {`${fmtTok(totalTok(r))} tokens (in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}) · ${fmtDur(r.durationMs || (live ? now - r.startedAt : 0))}`}
                 </Text>
               </Box>
             )
