@@ -65,3 +65,13 @@ claude plugin install subagent-control@subagent-control
 ```
 
 เพิ่มเลข version ให้เอง → validate + test → ถามยืนยัน → commit + push · ทุกเครื่องที่เปิด auto-update จะดึงเวอร์ชันใหม่เองหลังข้อความแรกของ session (≤ 10 นาที) แล้วมีผลใน session ถัดไป
+
+## เครื่องที่พัฒนา: ติดตั้งจากโฟลเดอร์ (ไม่ต้องใช้ git)
+
+```bash
+claude plugin marketplace remove subagent-control   # ถ้าเคยเพิ่มจาก GitHub
+claude plugin marketplace add ~/projects/subagent-control
+claude plugin install subagent-control@subagent-control
+```
+
+`claude plugin list` จะขึ้น `Read from: ~/projects/subagent-control` = อ่านไฟล์จากโฟลเดอร์ตรงๆ แก้แล้ว**เปิด session ใหม่**ก็มีผล ไม่ต้อง bump version หรือ push · ใช้ `./release.sh` เฉพาะตอนอยากให้เครื่องอื่นได้ด้วย

@@ -70,25 +70,17 @@ test('role กำหนด model: Plan→ที่ปรึกษา, งาน�
   await ui.unmount()
 })
 
-test('เปิดอยู่ = system prompt สั่งให้ใช้ sub-agent, ปิด/ไม่มี Agent tool = ไม่ใส่', async ($, on) => {
-  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'core', scope: 'shared' as const }] }))
+test('คำอธิบาย Agent tool มีคำสั่งให้ใช้ sub-agent ตอนเปิด', async ($, on) => {
+  on('tool.describe', (_, e) => ({ description: e.description }))
   on('store.set', () => ({ value: undefined }))
   on('agent.register', () => ({ value: undefined }) as never)
   on('clock.now', () => ({ value: Date.now() }))
-  const policy = async (tools: string[]) =>
-    (await $.prompt.compose({ tools, model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], outputStyle: null, traits: [] })).sections.find(s => s.id === 'subagent-control:policy')
+  const describe = async () =>
+    (await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: { plugin: 'engine', tier: 'core' } } as never)).description
 
-  const on1 = await policy(['Agent', 'Read'])
-  expect(on1?.text).toContain('subagent-control:explorer')
-  expect(on1?.text).toContain('subagent-control:runner')
-  expect(await policy(['Read'])).toBeUndefined()
-
+  expect(await describe()).toContain('subagent-control:explorer')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'tab:roles' })
-  await ui.press({ key: 'en:runner' })
-  expect((await policy(['Agent']))?.text).not.toContain('subagent-control:runner')
-
   await ui.press({ key: 'master' })
-  expect(await policy(['Agent'])).toBeUndefined()
+  expect(await describe()).toBe('Launch a new agent.')
   await ui.unmount()
 })

@@ -259,6 +259,12 @@ const isLive = (r: Run, now: number) => r.status === 'running' && now - r.starte
 async function setConfig($: EngineInterface, fn: (c: Config) => Config) {
   const v = await update($, configAtom, fn)
   await $.store.set('config-2', v)
+  // คำอธิบาย Agent tool เปลี่ยนตามสวิตช์ (มีผลใน thread ใหม่ ส่วน thread นี้ agent.spawn ยังบล็อก/ปล่อยตามจริง)
+  try {
+    $.ui.invalidate('tool.describe')
+  } catch {
+    // engine ที่ไม่รองรับ: คำอธิบายใหม่มีผลใน session ถัดไป
+  }
   return v
 }
 async function setRole($: EngineInterface, id: RoleId, patch: Partial<RoleRule>) {
@@ -451,16 +457,12 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // เปิดอยู่ = บอก Claude ใน system prompt ให้ส่งงานให้ sub-agent จริง
-  // (ไม่งั้นค่าเริ่มต้นของ Claude Code คือ "ไม่แน่ใจก็อย่า spawn" สวิตช์จะแค่อนุญาตเฉยๆ)
-  // ใส่เฉพาะ loop ที่มี Agent tool → sub-agent เอง (ไม่มี Agent tool) ไม่ได้รับ จึงไม่แตกซ้อน
-  on('prompt.compose', async ($, e, next) => {
+  // ทางหลัก: ต่อท้ายคำอธิบายของ Agent tool (ที่เดียวกับคำแนะนำเดิม "ไม่แน่ใจก็อย่า spawn")
+  // เพราะ prompt.compose อาจถูก plugin อื่นที่รันก่อนข้ามไป (เช่น cc-plugin-sec-default)
+  on('tool.describe', { tool: 'Agent' }, async ($, e, next) => {
     const res = await next(e)
-    if (!e.tools.includes('Agent')) return res
-    const cfg = await read($, configAtom)
-    const text = delegationPolicy(cfg)
-    if (!text) return res
-    return { sections: [...res.sections, { id: 'subagent-control:policy', text, scope: 'session' as const }] }
+    const text = delegationPolicy(await read($, configAtom))
+    return text ? { ...res, description: `${res.description}\n\n${text}` } : res
   })
 
   // ซ่อน role ที่ปิดอยู่ (หรือทั้งหมดเมื่อปิดสวิตช์หลัก) จากรายการที่ Claude เห็น
