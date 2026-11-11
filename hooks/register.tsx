@@ -284,6 +284,34 @@ async function syncAgent($: EngineInterface, id: RoleId, cfg: Config) {
   })
 }
 
+const WHEN: Record<RoleId, string> = {
+  explorer: 'finding where something lives or how parts connect, whenever it means searching or reading more than a couple of files',
+  advisor: 'a design, plan, code review or hard trade-off before you change code',
+  coder: 'an implementation step whose plan is clear, especially independent pieces that can run in parallel',
+  runner: 'running tests, builds, linters or long commands and summarizing the failures',
+}
+
+/** คำสั่งใน system prompt ตอนเปิด sub-agents (ว่าง = ไม่ใส่) */
+function delegationPolicy(cfg: Config): string {
+  if (!cfg.enabled) return ''
+  const on = ROLES.filter(r => cfg.roles[r.id]?.enabled !== false)
+  if (on.length === 0) return ''
+  const lines = on.map(r => `- \`${AGENT_PREFIX}${r.id}\` — ${WHEN[r.id]}.`)
+  return [
+    '# Sub-agents (turned on by the user)',
+    'The user switched on the Sub-agents panel: they want work delegated to sub-agents rather than done entirely in this thread. This takes precedence over any general advice to avoid spawning agents or to do small searches yourself.',
+    'Use the Agent tool with these sub-agent types (each already runs on the model and effort the user picked for it):',
+    ...lines,
+    'How to delegate:',
+    '- Delegate every step that matches a role above; keep only quick single-file edits, one-off commands and the final integration in this thread.',
+    '- Start independent sub-agents in the same message so they run in parallel; wait for their results instead of redoing their work.',
+    '- Give each a self-contained brief (goal, files, what is already known, what to report back), since it does not see this conversation.',
+    '- Check what a sub-agent reports before you tell the user it is done.',
+    '- If a spawn is denied (the user capped how many run at once or turned a role off), do that step yourself.',
+    '- When the user asks whether sub-agents are being used, answer from the Agent calls you actually made.',
+  ].join('\n')
+}
+
 async function refreshUsage($: EngineInterface) {
   const u = await $.session.usage()
   const at = await $.clock.now()
@@ -421,6 +449,18 @@ export const register: Register = on => {
       costUsd: e.cost?.usd,
     }))
     return next(e)
+  })
+
+  // เปิดอยู่ = บอก Claude ใน system prompt ให้ส่งงานให้ sub-agent จริง
+  // (ไม่งั้นค่าเริ่มต้นของ Claude Code คือ "ไม่แน่ใจก็อย่า spawn" สวิตช์จะแค่อนุญาตเฉยๆ)
+  // ใส่เฉพาะ loop ที่มี Agent tool → sub-agent เอง (ไม่มี Agent tool) ไม่ได้รับ จึงไม่แตกซ้อน
+  on('prompt.compose', async ($, e, next) => {
+    const res = await next(e)
+    if (!e.tools.includes('Agent')) return res
+    const cfg = await read($, configAtom)
+    const text = delegationPolicy(cfg)
+    if (!text) return res
+    return { sections: [...res.sections, { id: 'subagent-control:policy', text, scope: 'session' as const }] }
   })
 
   // ซ่อน role ที่ปิดอยู่ (หรือทั้งหมดเมื่อปิดสวิตช์หลัก) จากรายการที่ Claude เห็น

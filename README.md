@@ -43,3 +43,25 @@ claude plugin install subagent-control --marketplace thirddeity/subagent-control
 - **Account:** อ่านจากไฟล์ `.claude.json` ในเครื่อง (ไม่ส่งข้อมูลออกไปไหน) ถ้าใช้ API key หรือ cloud provider จะไม่มีข้อมูลส่วนนี้
 - **Effort:** มีผลเมื่อ Claude เรียก role ของ mod นี้โดยตรง ส่วน agent ในตัวจะถูกเปลี่ยนแค่ model
 - **Workflow:** agent ที่ workflow แตกออกมา และ agent ที่ resume ต่อจากเดิม ไม่ถูกกฎของ mod นี้
+
+## ติดตั้ง + อัปเดตอัตโนมัติ (ทุกเครื่อง/ทุกบัญชี)
+
+ครั้งเดียวต่อเครื่อง (ต่อบัญชี):
+
+```bash
+claude plugin marketplace add thirddeity/subagent-control
+claude plugin install subagent-control@subagent-control
+```
+
+แล้วเปิด auto-update: ใน session พิมพ์ `/plugin` → แท็บ Marketplaces → `subagent-control` → Enable auto-update
+(หรือใส่ `"autoUpdate": true` ใน `extraKnownMarketplaces.subagent-control` ของ `settings.json`)
+
+> ถ้าเคยอัปโหลด mod นี้ขึ้น claude.ai (Plugins → Created by you) ให้ลบออก ไม่งั้น Desktop จะใช้ตัวที่อัปโหลดแทนตัวนี้
+
+## ปล่อยเวอร์ชันใหม่
+
+```bash
+./release.sh "อธิบายสิ่งที่แก้"
+```
+
+เพิ่มเลข version ให้เอง → validate + test → ถามยืนยัน → commit + push · ทุกเครื่องที่เปิด auto-update จะดึงเวอร์ชันใหม่เองหลังข้อความแรกของ session (≤ 10 นาที) แล้วมีผลใน session ถัดไป
