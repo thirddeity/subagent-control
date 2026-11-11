@@ -42,4 +42,17 @@ case "$yn" in y|Y) ;; *) echo "ยกเลิก (ไฟล์ยังอย�
 git add -A
 git commit -q -m "$msg, bump to $cur"
 git push -q origin main
-echo "ปล่อย $cur แล้ว — ทุกเครื่องที่เปิด auto-update จะได้เวอร์ชันนี้ใน session ถัดไป"
+echo "ปล่อย $cur แล้ว"
+
+# เครื่องนี้: อัปเดตทุกบัญชีทันที (auto-update ของ Claude ไม่ได้ดึงให้จริง — 0.1.6 ค้างอยู่ทั้งที่ออก 0.1.8 แล้ว)
+for d in "$HOME"/.claude "$HOME"/.claude-*; do
+  [ -f "$d/plugins/installed_plugins.json" ] || continue
+  grep -q '"subagent-control@subagent-control"' "$d/plugins/installed_plugins.json" || continue
+  CLAUDE_CONFIG_DIR="$d" claude plugin marketplace update subagent-control >/dev/null 2>&1 || true
+  if CLAUDE_CONFIG_DIR="$d" claude plugin update subagent-control@subagent-control -s user >/dev/null 2>&1; then
+    echo "✓ $(basename "$d") → $cur"
+  else
+    echo "✗ $(basename "$d") อัปเดตไม่สำเร็จ — รัน: CLAUDE_CONFIG_DIR=$d claude plugin update subagent-control@subagent-control" >&2
+  fi
+done
+echo "เปิด session ใหม่ (หรือ /reload-plugins) เพื่อใช้เวอร์ชันใหม่ · เครื่องอื่นรัน: claude plugin update subagent-control@subagent-control"

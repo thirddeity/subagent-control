@@ -310,6 +310,8 @@ function delegationPolicy(cfg: Config): string {
     ...lines,
     'How to delegate:',
     '- Delegate every step that matches a role above; keep only quick single-file edits, one-off commands and the final integration in this thread.',
+    '- Prefer these types over the built-in Explore, Plan and general-purpose agents for the same kind of work.',
+    '- In plan mode, or whenever you are about to propose a plan or design, have the advisor draft or review it first and say in the plan that it did.',
     '- Start independent sub-agents in the same message so they run in parallel; wait for their results instead of redoing their work.',
     '- Give each a self-contained brief (goal, files, what is already known, what to report back), since it does not see this conversation.',
     '- Check what a sub-agent reports before you tell the user it is done.',
