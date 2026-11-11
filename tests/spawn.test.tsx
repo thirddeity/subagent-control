@@ -47,7 +47,7 @@ test('ปิด sub-agents แล้วสถานะชัด และ spawn 
   }
 })
 
-test('role กำหนด model: Plan→ที่ปรึกษา, งานรันเทสต์→ผู้รันงาน', async ($, on) => {
+test('role กำหนด model: Plan→วางแผน, งานรันเทสต์→รันเทสต์', async ($, on) => {
   const models: (string | undefined)[] = []
   on('agent.spawn', (_, e) => {
     models.push(e.model)

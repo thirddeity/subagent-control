@@ -15,6 +15,8 @@ import type {
 } from '../types'
 
 const PANE = 'subagent-control'
+// release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
+const VERSION = '0.1.11'
 const TITLE = 'Sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -39,7 +41,7 @@ const READ_ONLY = ['Edit', 'Write', 'NotebookEdit']
 const ROLES: RoleDef[] = [
   {
     id: 'advisor',
-    name: 'ที่ปรึกษา',
+    name: 'วางแผน / รีวิว',
     short: 'วิเคราะห์ · ออกแบบ · รีวิว',
     purpose: 'คิดก่อนลงมือ: วิเคราะห์ปัญหา ออกแบบ วางแผน รีวิวโค้ด',
     usedFor: 'agent แบบ Plan และงานที่เกี่ยวกับ review / ออกแบบ / วางแผน',
@@ -52,7 +54,7 @@ const ROLES: RoleDef[] = [
   },
   {
     id: 'explorer',
-    name: 'นักสำรวจ',
+    name: 'ค้นหาโค้ด',
     short: 'ค้นหา · อ่านโค้ด',
     purpose: 'ค้นหาไฟล์ อ่านโค้ด แล้วสรุปว่าอะไรอยู่ตรงไหน',
     usedFor: 'agent แบบ Explore และงานค้นหา / อ่าน / สรุปโค้ด',
@@ -65,7 +67,7 @@ const ROLES: RoleDef[] = [
   },
   {
     id: 'coder',
-    name: 'นักเขียนโค้ด',
+    name: 'เขียนโค้ด',
     short: 'เขียน · แก้โค้ด',
     purpose: 'แก้หรือเขียนโค้ดตามแผนที่ตกลงกันแล้ว',
     usedFor: 'agent แบบ general-purpose ที่ไม่เข้า role อื่น',
@@ -77,7 +79,7 @@ const ROLES: RoleDef[] = [
   },
   {
     id: 'runner',
-    name: 'ผู้รันงาน',
+    name: 'รันเทสต์ / build',
     short: 'รันคำสั่ง · เทสต์ · build',
     purpose: 'รันคำสั่ง เทสต์ build lint แล้วสรุปผล',
     usedFor: 'งานที่มีคำว่า test / run / build / lint / รัน / เทสต์',
@@ -203,7 +205,7 @@ function fmtWhen(ms: number, now: number): string {
   const date = `${d.getDate()} ${TH_MONTHS[d.getMonth()]}`
   if (dayKey(d) === dayKey(today)) return `วันนี้ (${TH_DAYS[d.getDay()]} ${date}) ${timeTh(ms)}`
   if (dayKey(d) === dayKey(tomorrow)) return `พรุ่งนี้ (${TH_DAYS[d.getDay()]} ${date}) ${timeTh(ms)}`
-  return `วัน${TH_DAYS[d.getDay()]} ${date} ${timeTh(ms)}`
+  return `${TH_DAYS[d.getDay()]} ${date} ${timeTh(ms)}`
 }
 function fmtLeft(ms: number): string {
   const m = Math.max(0, Math.round(ms / 60_000))
@@ -218,7 +220,7 @@ function fmtReset(s: string | undefined, now: number, timeOnly = false): [string
   const t = Date.parse(s)
   if (Number.isNaN(t)) return [`รีเซ็ต ${s}`, '']
   // ราย 5 ชม. รีเซ็ตภายในไม่กี่ชั่วโมงอยู่แล้ว ไม่ต้องบอกวัน
-  return [`รีเซ็ต${timeOnly ? ` ${timeTh(t)}` : fmtWhen(t, now)}`, fmtLeft(t - now)]
+  return [`รีเซ็ต ${timeOnly ? timeTh(t) : fmtWhen(t, now)}`, fmtLeft(t - now)]
 }
 const LIMIT_LABEL: Record<string, string> = {
   five_hour: '5 ชั่วโมง',
@@ -630,7 +632,7 @@ export const register: Register = on => {
     const range = await read($, rangeAtom)
     const now = await $.clock.now()
     const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 50
-    const barW = Math.max(8, Math.min(20, cols - 22))
+    const barW = Math.max(8, Math.min(20, cols - 26))
     const live = runs.filter(r => isLive(r, now))
 
     const heading = (title: string, hint?: string) => (
@@ -641,7 +643,7 @@ export const register: Register = on => {
     )
 
     // แถวมาตรวัด: ป้ายอยู่คอลัมน์ซ้ายกว้างคงที่ แถบกับคำอธิบายอยู่คอลัมน์ขวา จึงตรงกันเสมอ
-    const LABEL_W = 12
+    const LABEL_W = 16
     const meter = (key: string, label: string, pct: number, value: string, color: Color, sub?: string, extra?: string) => (
       <Box key={key} flexDirection="row">
         <Box width={LABEL_W} flexShrink={0}>
@@ -665,6 +667,7 @@ export const register: Register = on => {
           <Text>
             <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
             <Text bold> {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
+            <Text dimColor>  v{VERSION}</Text>
           </Text>
           <Button
             key="master"
@@ -848,7 +851,7 @@ export const register: Register = on => {
             const rule = cfg.roles[def.id]
             return (
               <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1}>
-                <Box width={14} flexShrink={0}>
+                <Box width={18} flexShrink={0}>
                   <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
                     <Text color={rule.enabled ? 'success' : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
                     <Text bold={rule.enabled} dimColor={!rule.enabled}> {def.name}</Text>

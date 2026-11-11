@@ -29,6 +29,9 @@ if [ "$cur" = "$pub" ]; then
   perl -pi -e "s/(\"version\"\\s*:\\s*\")[^\"]*/\${1}$cur/" "$MANIFEST"
 fi
 echo "เวอร์ชัน: $pub → $cur"
+# เลขที่แสดงในหัวแผง
+perl -pi -e "s/^const VERSION = '[^']*'/const VERSION = '$cur'/" hooks/register.tsx
+grep -q "^const VERSION = '$cur'" hooks/register.tsx || { echo "เขียนเลขเวอร์ชันลง hooks/register.tsx ไม่ได้" >&2; exit 1; }
 
 claude plugin validate . >/dev/null
 claude plugin test .

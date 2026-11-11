@@ -11,12 +11,12 @@ A Claude Code mod that adds a Sub-agents pane: turn sub-agents on or off, pick a
 
   | Role | หน้าที่ | ค่าเริ่มต้น |
   |---|---|---|
-  | ที่ปรึกษา | วิเคราะห์ ออกแบบ วางแผน รีวิว (ไม่แก้ไฟล์) | Opus 5.5 · high |
-  | นักสำรวจ | ค้นหาและอ่านโค้ด แล้วสรุป (ไม่แก้ไฟล์) | Haiku 5.5 · low |
-  | นักเขียนโค้ด | แก้หรือเขียนโค้ดตามแผน | Sonnet 5.5 · medium |
-  | ผู้รันงาน | รันคำสั่ง เทสต์ build แล้วสรุปผล (ไม่แก้ไฟล์) | Haiku 5.5 · low |
+  | วางแผน / รีวิว | วิเคราะห์ ออกแบบ วางแผน รีวิว (ไม่แก้ไฟล์) | Opus 5.5 · high |
+  | ค้นหาโค้ด | ค้นหาและอ่านโค้ด แล้วสรุป (ไม่แก้ไฟล์) | Haiku 5.5 · low |
+  | เขียนโค้ด | แก้หรือเขียนโค้ดตามแผน | Sonnet 5.5 · medium |
+  | รันเทสต์ / build | รันคำสั่ง เทสต์ build แล้วสรุปผล (ไม่แก้ไฟล์) | Haiku 5.5 · low |
 
-  ทั้ง 4 role ลงทะเบียนเป็น agent type (`subagent-control:advisor`, `:explorer`, `:coder`, `:runner`) ส่วน agent ในตัวจะถูกจับคู่กับ role อัตโนมัติ คือ Plan → ที่ปรึกษา, Explore → นักสำรวจ และ general-purpose จะดูจากเนื้องาน
+  ทั้ง 4 role ลงทะเบียนเป็น agent type (`subagent-control:advisor`, `:explorer`, `:coder`, `:runner`) ส่วน agent ในตัวจะถูกจับคู่กับ role อัตโนมัติ คือ Plan → วางแผน / รีวิว, Explore → ค้นหาโค้ด และ general-purpose จะดูจากเนื้องาน
 - **ควบคุม usage** มีโหมดประหยัด (เมื่อ usage 5 ชั่วโมงถึงระดับที่ตั้ง ทุก role จะเปลี่ยนไปใช้ Haiku) และจำกัดจำนวน sub-agent ที่ทำงานพร้อมกันได้
 - **ภาพรวม** แสดง account ที่ใช้อยู่, usage รอบ 5 ชั่วโมง / 7 วัน พร้อมเวลารีเซ็ต, context และประวัติ token ของ sub-agent แต่ละตัว (เก็บข้ามเซสชัน)
 
