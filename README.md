@@ -1,8 +1,8 @@
 # subagent-control
 
-Mod สำหรับ Claude Code ที่เพิ่มแผง **Sub-agents** ไว้ข้างแชท และแถบสถานะไว้เหนือช่องพิมพ์ ใช้ควบคุมว่า Claude จะแตกงานให้ sub-agent ไหม และงานแต่ละแบบใช้ model ไหน
+Mod สำหรับ Claude Code ที่เพิ่มแผง **sub-agents** ไว้ข้างแชท และแถบสถานะไว้เหนือช่องพิมพ์ ใช้ควบคุมว่า Claude จะแตกงานให้ sub-agent ไหม และงานแต่ละแบบใช้ model ไหน
 
-A Claude Code mod that adds a Sub-agents pane: turn sub-agents on or off, pick a model and effort per role, and see account, usage and per-agent token history.
+A Claude Code mod that adds a sub-agents pane: turn sub-agents on or off, pick a model and effort per role, and see account, usage and per-agent token history.
 
 ## ทำอะไรได้บ้าง
 

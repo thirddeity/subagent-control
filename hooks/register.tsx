@@ -7,6 +7,7 @@ import type {
   EffortChoice,
   HistoryRange,
   ModelChoice,
+  ModelDay,
   RoleId,
   RoleRule,
   Run,
@@ -16,10 +17,11 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.11'
-const TITLE = 'Sub-agents'
+const VERSION = '0.1.12'
+const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
+const MAX_MODEL_DAYS = 400
 const STALE_MS = 2 * 60 * 60 * 1000
 
 // ---------- roles ----------
@@ -106,13 +108,17 @@ const DEFAULT_CONFIG: Config = {
 }
 const EMPTY_USAGE: UsageSnap = { at: 0, startedAt: 0, limits: [], contextWindow: 0 }
 
-const tabAtom = atom({ plugin: 'subagent-control', key: 'tab' } as const, 'overview')
+const tabAtom = atom({ plugin: 'subagent-control', key: 'tab' } as const, 'models')
 const rangeAtom = atom({ plugin: 'subagent-control', key: 'range' } as const, 'today')
 const paneOpenAtom = atom({ plugin: 'subagent-control', key: 'paneOpen' } as const, false)
 const configAtom = atom({ plugin: 'subagent-control', key: 'config' } as const, DEFAULT_CONFIG, {
   shape: 'config-2',
 })
 const runsAtom = atom({ plugin: 'subagent-control', key: 'runs' } as const, [] as Run[], { shape: 'runs-2' })
+const modelUsageAtom = atom({ plugin: 'subagent-control', key: 'modelUsage' } as const, [] as ModelDay[], {
+  shape: 'model-usage-1',
+})
+const sessionModelsAtom = atom({ plugin: 'subagent-control', key: 'sessionModels' } as const, [] as ModelDay[])
 const usageAtom = atom({ plugin: 'subagent-control', key: 'usage' } as const, EMPTY_USAGE, {
   shape: 'usage-1',
 })
@@ -256,6 +262,30 @@ function planName(a: AccountInfo): string | undefined {
 }
 const roleLabel = (r: Run['role']) => (r === 'other' ? 'อื่น ๆ' : ROLE_BY_ID[r].name)
 const totalTok = (r: Run) => r.input + r.cacheRead + r.cacheWrite + r.output
+const modelTok = (d: ModelDay) => d.input + d.cacheRead + d.cacheWrite + d.output
+const DAY_MS = 86_400_000
+const startOfDay = (ms: number) => new Date(new Date(ms).toDateString()).getTime()
+type TurnUsage = {
+  model?: string
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+/** บวก token ของ 1 turn ลงแถวของ (วัน, model) นั้น */
+function addModelUsage(list: ModelDay[], at: number, u: TurnUsage): ModelDay[] {
+  const model = u.model ?? ''
+  const add = (d: ModelDay): ModelDay => ({
+    ...d,
+    input: d.input + (u.input_tokens ?? 0),
+    output: d.output + (u.output_tokens ?? 0),
+    cacheRead: d.cacheRead + (u.cache_read_input_tokens ?? 0),
+    cacheWrite: d.cacheWrite + (u.cache_creation_input_tokens ?? 0),
+    turns: d.turns + 1,
+  })
+  if (list.some(d => d.at === at && d.model === model)) return list.map(d => (d.at === at && d.model === model ? add(d) : d))
+  return [...list, add({ at, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, turns: 0 })]
+}
 const isLive = (r: Run, now: number) => r.status === 'running' && now - r.startedAt < STALE_MS
 
 // ---------- writers ----------
@@ -278,6 +308,12 @@ async function setRole($: EngineInterface, id: RoleId, patch: Partial<RoleRule>)
 async function setRuns($: EngineInterface, fn: (r: Run[]) => Run[]) {
   const v = await update($, runsAtom, r => fn(r).slice(-MAX_RUNS))
   await $.store.set('runs-2', v)
+}
+
+async function recordMainUsage($: EngineInterface, now: number, u: TurnUsage) {
+  const v = await update($, modelUsageAtom, l => addModelUsage(l, startOfDay(now), u).slice(-MAX_MODEL_DAYS))
+  await $.store.set('model-usage-1', v)
+  await update($, sessionModelsAtom, l => addModelUsage(l, 0, u))
 }
 
 /** ลงทะเบียน role เป็น agent type ให้ Claude เลือกใช้ได้ (model + effort ตามที่ตั้ง) */
@@ -402,6 +438,10 @@ export const register: Register = on => {
       : DEFAULT_CONFIG
     await update($, configAtom, () => cfg)
 
+    const storedModels = await $.store.get('model-usage-1')
+    if (Array.isArray(storedModels)) await update($, modelUsageAtom, () => storedModels as ModelDay[])
+    await update($, sessionModelsAtom, () => [])
+
     const storedRuns = await $.store.get('runs-2')
     if (Array.isArray(storedRuns)) {
       const now = await $.clock.now()
@@ -412,7 +452,7 @@ export const register: Register = on => {
 
     await $.command.register({
       name: 'subagents',
-      description: 'เปิด/ปิดแผง Sub-agents (ใส่ on หรือ off เพื่อเปิดปิดการใช้ sub-agents)',
+      description: 'เปิด/ปิดแผง sub-agents (ใส่ on หรือ off เพื่อเปิดปิดการใช้ sub-agents)',
       argumentHint: '[on|off]',
     })
     for (const role of ROLES) await syncAgent($, role.id, cfg).catch(() => undefined)
@@ -431,15 +471,15 @@ export const register: Register = on => {
     const arg = String(e.args ?? '').trim().toLowerCase()
     if (arg === 'on' || arg === 'off') {
       await setConfig($, c => ({ ...c, enabled: arg === 'on' }))
-      return { text: arg === 'on' ? 'Sub-agents: เปิดใช้งานแล้ว' : 'Sub-agents: ปิดแล้ว Claude จะทำงานเองใน thread หลัก' }
+      return { text: arg === 'on' ? 'sub-agents: เปิดใช้งานแล้ว' : 'sub-agents: ปิดแล้ว Claude จะทำงานเองใน thread หลัก' }
     }
     if (await read($, paneOpenAtom)) {
       await closePane($)
-      return { text: 'ปิดแผง Sub-agents แล้ว' }
+      return { text: 'ปิดแผง sub-agents แล้ว' }
     }
     const opened = await openPane($)
     return {
-      text: opened.isPlaced ? 'เปิดแผง Sub-agents แล้ว' : `แผง Sub-agents ยังแสดงไม่ได้: ${opened.reason}`,
+      text: opened.isPlaced ? 'เปิดแผง sub-agents แล้ว' : `แผง sub-agents ยังแสดงไม่ได้: ${opened.reason}`,
     }
   })
 
@@ -514,7 +554,7 @@ export const register: Register = on => {
     if (cfg.maxParallel > 0) {
       const running = (await read($, runsAtom)).filter(r => isLive(r, now)).length
       if (running >= cfg.maxParallel) {
-        return deny(`มี sub-agent ทำงานอยู่ ${running} ตัว ครบจำนวนที่ผู้ใช้อนุญาตแล้ว รอให้ตัวที่ทำอยู่เสร็จก่อน`)
+        return deny(`มี sub-agents ทำงานอยู่ ${running} ตัว ครบจำนวนที่ผู้ใช้อนุญาตแล้ว รอให้ตัวที่ทำอยู่เสร็จก่อน`)
       }
     }
 
@@ -539,9 +579,12 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     const id = e.agentId
-    if (id === undefined) return result
     const u = e.usage
     const now = await $.clock.now()
+    if (id === undefined) {
+      if (u) await recordMainUsage($, now, u)
+      return result
+    }
     const status: Run['status'] = e.reason === 'answer' ? 'done' : e.reason === 'aborted' ? 'aborted' : 'failed'
     await setRuns($, runs => {
       const list: Run[] = runs.some(r => r.agentId === id)
@@ -598,7 +641,7 @@ export const register: Register = on => {
       <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
         <Text>
           <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
-          <Text bold> Sub-agents</Text>
+          <Text bold> sub-agents</Text>
           <Text dimColor> · {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
         </Text>
         <Button
@@ -630,6 +673,9 @@ export const register: Register = on => {
     const usage = await read($, usageAtom)
     const acct = await read($, accountAtom)
     const range = await read($, rangeAtom)
+    const storedDays = await read($, modelUsageAtom)
+    const sessionDays = await read($, sessionModelsAtom)
+    const mainDays = range === 'session' ? sessionDays : storedDays
     const now = await $.clock.now()
     const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 50
     const barW = Math.max(8, Math.min(20, cols - 26))
@@ -686,8 +732,9 @@ export const register: Register = on => {
       <Box flexDirection="row" gap={1} marginTop={1}>
         {(
           [
-            { id: 'overview', label: 'ภาพรวม', hotkey: '1' },
-            { id: 'roles', label: 'ตั้งค่า', hotkey: '2' },
+            { id: 'models', label: 'โมเดล', hotkey: '1' },
+            { id: 'agents', label: 'sub-agents', hotkey: '2' },
+            { id: 'roles', label: 'ตั้งค่า', hotkey: '3' },
           ] as const
         ).map(t => (
           <Button
@@ -702,10 +749,9 @@ export const register: Register = on => {
       </Box>
     )
 
-    // ----- ภาพรวม: account + usage + วันนี้ + ประวัติ -----
-    const overview = () => {
+    const data = (() => {
       const plan = planName(acct)
-      const startOfToday = new Date(new Date(now).toDateString()).getTime()
+      const startOfToday = startOfDay(now)
       const from =
         range === 'session' ? usage.startedAt : range === 'today' ? startOfToday : range === 'week' ? now - 7 * 86_400_000 : 0
       // ตัดรายการที่ถูกบล็อก (ของเก่าที่เคยบันทึกไว้) ออกจากทุกส่วนของแผง
@@ -724,8 +770,25 @@ export const register: Register = on => {
       const maxTok = Math.max(1, ...roleRows.map(([, g]) => g.tok))
       const recent = [...list].reverse().slice(0, 15)
 
-      return (
-        <Box flexDirection="column">
+      // token แยกตามโมเดล: thread หลัก (เก็บรายวัน) + sub-agents (จาก runs)
+      const byModel = new Map<string, { main: number; sub: number }>()
+      const slot = (m: string) => {
+        const k = modelName(m)
+        const g = byModel.get(k) ?? { main: 0, sub: 0 }
+        byModel.set(k, g)
+        return g
+      }
+      for (const d of mainDays) if (range === 'session' || d.at + DAY_MS > from) slot(d.model).main += modelTok(d)
+      for (const r of counted) slot(r.model).sub += totalTok(r)
+      const modelRows = [...byModel.entries()].sort((x, y) => y[1].main + y[1].sub - (x[1].main + x[1].sub))
+      const maxModelTok = Math.max(1, ...modelRows.map(([, g]) => g.main + g.sub))
+      return { plan, list, counted, roleRows, maxTok, recent, modelRows, maxModelTok }
+    })()
+    const { plan, list, counted, roleRows, maxTok, recent, modelRows, maxModelTok } = data
+
+    // ----- แท็บโมเดล: account + usage + การใช้ตามโมเดล -----
+    const modelsTab = () => (
+      <Box flexDirection="column">
           {heading('Account')}
           {acct.source === 'none' ? (
             <Text dimColor>อ่านข้อมูล account ไม่ได้ (เช่น ใช้ API key หรือ cloud provider)</Text>
@@ -773,7 +836,51 @@ export const register: Register = on => {
           </Box>
 
           <Box flexDirection="row" alignItems="center" gap={1} marginTop={2}>
-            <Text bold>การใช้ sub-agent</Text>
+            <Text bold>การใช้ตามโมเดล</Text>
+            <Select
+              key="range"
+              options={RANGE_OPTS}
+              value={range}
+              onSelect={v => update($, rangeAtom, () => v as HistoryRange)}
+            />
+          </Box>
+          <Text>{fmtTok(modelRows.reduce((t, [, g]) => t + g.main + g.sub, 0))} tokens</Text>
+          {modelRows.length === 0 && <Text dimColor>ยังไม่มีข้อมูลในช่วงนี้ (เริ่มนับตั้งแต่ติดตั้งเวอร์ชันนี้)</Text>}
+          {modelRows.length > 0 && (
+            <Box flexDirection="column" gap={1} marginTop={1}>
+              {modelRows.map(([k, g]) =>
+                meter(
+                  `model:${k}`,
+                  k,
+                  ((g.main + g.sub) / maxModelTok) * 100,
+                  fmtTok(g.main + g.sub),
+                  'claude',
+                  `main ${fmtTok(g.main)} · sub-agents ${fmtTok(g.sub)}`,
+                ),
+              )}
+            </Box>
+          )}
+          <Box flexDirection="row" gap={1} marginTop={1}>
+            <Button
+              key="refresh"
+              dimColor
+              onPress={async () => {
+                await refreshUsage($)
+                const a = await loadAccount($)
+                await update($, accountAtom, () => a)
+              }}
+            >
+              รีเฟรช
+            </Button>
+          </Box>
+      </Box>
+    )
+
+    // ----- แท็บ sub-agents: การใช้ + ประวัติ -----
+    const agentsTab = () => (
+      <Box flexDirection="column">
+          <Box flexDirection="row" alignItems="center" gap={1} marginTop={2}>
+            <Text bold>การใช้ sub-agents</Text>
             <Select
               key="range"
               options={RANGE_OPTS}
@@ -794,7 +901,7 @@ export const register: Register = on => {
 
           {heading("ประวัติล่าสุด")}
           <Box marginTop={1} />
-          {recent.length === 0 && <Text dimColor>ยังไม่มี sub-agent ในช่วงนี้</Text>}
+          {recent.length === 0 && <Text dimColor>ยังไม่มี sub-agents ในช่วงนี้</Text>}
           {recent.map(r => {
             const live = isLive(r, now)
             const st = r.status === 'running' && !live ? 'unknown' : r.status
@@ -824,24 +931,12 @@ export const register: Register = on => {
             )
           })}
           <Box flexDirection="row" gap={1} marginTop={1}>
-            <Button
-              key="refresh"
-              dimColor
-              onPress={async () => {
-                await refreshUsage($)
-                const a = await loadAccount($)
-                await update($, accountAtom, () => a)
-              }}
-            >
-              รีเฟรช
-            </Button>
             <Button key="clear" dimColor onPress={() => setRuns($, () => [])}>
               ล้างประวัติ
             </Button>
           </Box>
-        </Box>
-      )
-    }
+      </Box>
+    )
 
     // ----- ตั้งค่า role: แถวละ role กระชับ ๆ -----
     const roles = () => (
@@ -915,7 +1010,7 @@ export const register: Register = on => {
       <Box flexDirection="column" paddingX={1}>
         {status}
         {tabs}
-        {tab === 'roles' ? roles() : overview()}
+        {tab === 'roles' ? roles() : tab === 'agents' ? agentsTab() : modelsTab()}
       </Box>
     )
   })

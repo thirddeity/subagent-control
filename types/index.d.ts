@@ -1,4 +1,4 @@
-export type Tab = 'overview' | 'roles'
+export type Tab = 'models' | 'agents' | 'roles'
 export type HistoryRange = 'session' | 'today' | 'week' | 'all'
 
 export type RoleId = 'advisor' | 'explorer' | 'coder' | 'runner'
@@ -55,6 +55,17 @@ export type UsageSnap = {
   costUsd?: number
 }
 
+/** token ของ thread หลักแยกตาม model (รายวัน; at = เที่ยงคืนของวันนั้น) */
+export type ModelDay = {
+  at: number
+  model: string
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  turns: number
+}
+
 export type AccountInfo = {
   source: 'identity' | 'file' | 'none'
   kind?: string
@@ -78,6 +89,8 @@ declare module 'claude-code' {
       paneOpen: boolean
       config: Shaped<Config>
       runs: Shaped<Run[]>
+      modelUsage: Shaped<ModelDay[]>
+      sessionModels: ModelDay[]
       usage: Shaped<UsageSnap>
       account: Shaped<AccountInfo>
     }

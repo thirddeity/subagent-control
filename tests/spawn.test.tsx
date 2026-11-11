@@ -5,7 +5,7 @@ const PANE = {
   component: 'Pane',
   requestId: 'subagent-control',
   props: {
-    title: 'Sub-agents',
+    title: 'sub-agents',
     isFocused: false,
     bodyColumns: 48,
     placement: 'dock',
@@ -38,7 +38,7 @@ test('ปิด sub-agents แล้วสถานะชัด และ spawn 
 
     const res = await $.agent.spawn(spawnArgs('Explore', 'ค้นไฟล์'))
     expect(res.deny).toBeDefined()
-    await ui.press({ key: 'tab:overview' }).catch(() => undefined)
+    await ui.press({ key: 'tab:agents' }).catch(() => undefined)
     expect(await ui.find({ type: 'Text', text: /ถูกบล็อก/ })).toBeUndefined()
     expect(spawned).toBe(0)
 
@@ -67,7 +67,7 @@ test('role กำหนด model: Plan→วางแผน, งานรัน�
   await $.agent.spawn(spawnArgs('general-purpose', 'run the tests'))
   expect(models[2]).toBe('claude-sonnet-5-5')
 
-  await ui.press({ key: 'tab:overview' })
+  await ui.press({ key: 'tab:agents' })
   expect((await ui.find({ type: 'Text', text: /ออกแบบ API/ }))?.text).toContain('ออกแบบ API')
   await ui.unmount()
 })
@@ -84,5 +84,34 @@ test('คำอธิบาย Agent tool มีคำสั่งให้ใ�
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'master' })
   expect(await describe()).toBe('Launch a new agent.')
+  await ui.unmount()
+})
+
+test('แท็บโมเดลแยก token ตาม model (thread หลัก + sub-agents)', async ($, on) => {
+  on('store.set', () => ({ value: undefined }))
+  on('store.get', () => ({ value: undefined }) as never)
+  on('agent.register', () => ({ value: undefined }) as never)
+  on('clock.now', () => ({ value: Date.now() }))
+  on('turn.complete', () => ({ text: 'ok' }) as never)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab:models' })
+  await ui.select({ key: 'range', value: 'all' })
+
+  const turn = (model: string, input: number, output: number) =>
+    $.turn.complete({
+      reason: 'answer',
+      answer: 'ok',
+      durationMs: 10,
+      usage: { model, input_tokens: input, output_tokens: output },
+    } as never)
+  await turn('claude-opus-5-5', 1000, 500)
+  await turn('claude-opus-5-5', 500, 0)
+  await turn('claude-haiku-5-5', 200, 100)
+
+  const opus = await ui.find({ type: 'Text', text: /main 2k/ })
+  expect(opus?.text).toContain('main 2k')
+  expect(await ui.find({ type: 'Text', text: /Opus 5\.5/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Haiku 5\.5/ })).toBeDefined()
   await ui.unmount()
 })
