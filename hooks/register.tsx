@@ -212,11 +212,13 @@ function fmtLeft(ms: number): string {
   if (h < 24) return `อีก ${h} ชม. ${m % 60} นาที`
   return `อีก ${Math.floor(h / 24)} วัน ${h % 24} ชม.`
 }
-function fmtReset(s: string | undefined, now: number): string {
-  if (!s) return ''
+/** [เวลารีเซ็ต, เวลาคงเหลือ] — แสดงคนละแถว */
+function fmtReset(s: string | undefined, now: number, timeOnly = false): [string, string] {
+  if (!s) return ['', '']
   const t = Date.parse(s)
-  if (Number.isNaN(t)) return `รีเซ็ต ${s}`
-  return `รีเซ็ต${fmtWhen(t, now)} · ${fmtLeft(t - now)}`
+  if (Number.isNaN(t)) return [`รีเซ็ต ${s}`, '']
+  // ราย 5 ชม. รีเซ็ตภายในไม่กี่ชั่วโมงอยู่แล้ว ไม่ต้องบอกวัน
+  return [`รีเซ็ต${timeOnly ? ` ${timeTh(t)}` : fmtWhen(t, now)}`, fmtLeft(t - now)]
 }
 const LIMIT_LABEL: Record<string, string> = {
   five_hour: '5 ชั่วโมง',
@@ -640,16 +642,18 @@ export const register: Register = on => {
 
     // แถวมาตรวัด: ป้ายอยู่คอลัมน์ซ้ายกว้างคงที่ แถบกับคำอธิบายอยู่คอลัมน์ขวา จึงตรงกันเสมอ
     const LABEL_W = 12
-    const meter = (key: string, label: string, pct: number, value: string, color: Color, sub?: string) => (
+    const meter = (key: string, label: string, pct: number, value: string, color: Color, sub?: string, extra?: string) => (
       <Box key={key} flexDirection="row">
         <Box width={LABEL_W} flexShrink={0}>
           <Text>{label}</Text>
         </Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <Text color={color}>{bar(pct, barW)}</Text>
           <Text>
-            <Text color={color}>{bar(pct, barW)}</Text> <Text bold>{value}</Text>
+            <Text bold>{value}</Text>
+            {sub ? <Text dimColor> · {sub}</Text> : null}
           </Text>
-          {sub && <Text dimColor>{sub}</Text>}
+          {extra ? <Text dimColor>{extra}</Text> : null}
         </Box>
       </Box>
     )
@@ -742,16 +746,18 @@ export const register: Register = on => {
           {heading('Usage')}
           {usage.limits.length === 0 && <Text dimColor>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text>}
           <Box flexDirection="column" gap={1} marginTop={1}>
-            {usage.limits.map(l =>
-              meter(
+            {usage.limits.map(l => {
+              const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
+              return meter(
                 `lim:${l.kind}`,
                 LIMIT_LABEL[l.kind] ?? l.kind,
                 l.percent,
                 `${Math.round(l.percent)}%`,
                 l.percent >= 90 ? 'error' : l.percent >= 70 ? 'warning' : 'success',
-                fmtReset(l.resetsAt, now),
-              ),
-            )}
+                reset,
+                left,
+              )
+            })}
             {usage.contextWindow > 0 &&
               meter(
                 'context',
