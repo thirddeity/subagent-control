@@ -1,6 +1,6 @@
 {
   "name": "subagent-control",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "แผง sub-agents: เปิด/ปิด sub-agents, ตั้ง model และ effort ตาม role (ที่ปรึกษา, นักสำรวจ, นักเขียนโค้ด, ผู้รันงาน), ดู usage, account และประวัติ token รายตัว",
   "types": "./types/index.d.ts",
   "icon": "./.claude-plugin/icon.png"

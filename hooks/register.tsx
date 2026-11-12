@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.12'
+const VERSION = '0.1.13'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -119,6 +119,7 @@ const modelUsageAtom = atom({ plugin: 'subagent-control', key: 'modelUsage' } as
   shape: 'model-usage-1',
 })
 const sessionModelsAtom = atom({ plugin: 'subagent-control', key: 'sessionModels' } as const, [] as ModelDay[])
+const noticeAtom = atom({ plugin: 'subagent-control', key: 'notice' } as const, '')
 const usageAtom = atom({ plugin: 'subagent-control', key: 'usage' } as const, EMPTY_USAGE, {
   shape: 'usage-1',
 })
@@ -446,7 +447,7 @@ export const register: Register = on => {
     if (Array.isArray(storedRuns)) {
       const now = await $.clock.now()
       await update($, runsAtom, () =>
-        (storedRuns as Run[]).map(r => (r.status === 'running' && !isLive(r, now) ? { ...r, status: 'unknown' as const } : r)),
+        (storedRuns as Run[]).map(r => (r.status === 'running' ? { ...r, status: 'unknown' as const } : r)),
       )
     }
 
@@ -455,11 +456,21 @@ export const register: Register = on => {
       description: 'เปิด/ปิดแผง sub-agents (ใส่ on หรือ off เพื่อเปิดปิดการใช้ sub-agents)',
       argumentHint: '[on|off]',
     })
-    for (const role of ROLES) await syncAgent($, role.id, cfg).catch(() => undefined)
+    let notice = ''
+    for (const role of ROLES) {
+      await syncAgent($, role.id, cfg).catch(err => {
+        notice = `ลงทะเบียน ${ROLE_BY_ID[role.id].name} ไม่ได้: ${String((err as Error)?.message ?? err).slice(0, 120)}`
+      })
+    }
 
     const panes = await $.ui.panes().catch(() => [])
-    if (panes.some(p => p.id === PANE)) await update($, paneOpenAtom, () => true)
-    else void openPane($)
+    if (panes.some(p => p.id === PANE)) {
+      await update($, paneOpenAtom, () => true)
+    } else {
+      const opened = await openPane($)
+      if (!opened.isPlaced) notice = notice || `แผง sub-agents ยังแสดงไม่ได้: ${opened.reason}`
+    }
+    await update($, noticeAtom, () => notice)
 
     await refreshUsage($).catch(() => undefined)
     const acct = await loadAccount($).catch((): AccountInfo => ({ source: 'none' }))
@@ -673,6 +684,7 @@ export const register: Register = on => {
     const usage = await read($, usageAtom)
     const acct = await read($, accountAtom)
     const range = await read($, rangeAtom)
+    const notice = await read($, noticeAtom)
     const storedDays = await read($, modelUsageAtom)
     const sessionDays = await read($, sessionModelsAtom)
     const mainDays = range === 'session' ? sessionDays : storedDays
@@ -725,6 +737,7 @@ export const register: Register = on => {
           </Button>
         </Box>
         {cfg.enabled && live.length > 0 && <Text dimColor>ทำงานอยู่ {live.length} ตัว</Text>}
+        {notice && <Text color="warning">⚠ {notice}</Text>}
       </Box>
     )
 

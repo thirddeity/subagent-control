@@ -87,6 +87,7 @@ declare module 'claude-code' {
       tab: Tab
       range: HistoryRange
       paneOpen: boolean
+      notice: string
       config: Shaped<Config>
       runs: Shaped<Run[]>
       modelUsage: Shaped<ModelDay[]>
