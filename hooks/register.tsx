@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.13'
+const VERSION = '0.1.14'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -415,6 +415,8 @@ async function loadAccount($: EngineInterface): Promise<AccountInfo> {
   return info
 }
 
+const isNoSurface = (reason: string) => reason.startsWith('no-surface')
+
 async function openPane($: EngineInterface) {
   const res = await $.ui.open({ id: PANE, title: TITLE })
   await update($, paneOpenAtom, () => true)
@@ -468,7 +470,11 @@ export const register: Register = on => {
       await update($, paneOpenAtom, () => true)
     } else {
       const opened = await openPane($)
-      if (!opened.isPlaced) notice = notice || `แผง sub-agents ยังแสดงไม่ได้: ${opened.reason}`
+      // no-surface ตอนเริ่ม session เป็นเรื่องปกติในแอป desktop: แผงยังเปิดค้างไว้
+      // และจะถูกวาดเองเมื่อ surface ต่อเข้ามา (session.attach) — ไม่ต้องเตือน
+      if (!opened.isPlaced && !isNoSurface(opened.reason)) {
+        notice = notice || `แผง sub-agents ยังแสดงไม่ได้: ${opened.reason}`
+      }
     }
     await update($, noticeAtom, () => notice)
 
@@ -492,6 +498,14 @@ export const register: Register = on => {
     return {
       text: opened.isPlaced ? 'เปิดแผง sub-agents แล้ว' : `แผง sub-agents ยังแสดงไม่ได้: ${opened.reason}`,
     }
+  })
+
+  // surface ต่อเข้ามาทีหลัง session.start: ล้างคำเตือนเรื่องแผงที่ค้างอยู่ (ถ้ามี)
+  on('session.attach', async ($, e, next) => {
+    const res = await next(e)
+    const notice = await read($, noticeAtom)
+    if (notice.startsWith('แผง sub-agents ยังแสดงไม่ได้')) await update($, noticeAtom, () => '')
+    return res
   })
 
   // ปิดแผงจากปุ่มปิดของแอป ก็ให้สถานะตรงกัน
