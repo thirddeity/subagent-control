@@ -20,6 +20,10 @@ export type Config = {
   maxParallel: number
   /** โหมดประหยัด: % ของ usage 5 ชม. ที่ทุก role เปลี่ยนไปใช้ Haiku; 0 = ปิด */
   saverAt: number
+  /** ซ่อนแถบ sub-agents เหนือช่องพิมพ์ (ค่าเก่าที่ไม่มีช่องนี้ = แสดง) */
+  bandHidden?: boolean
+  /** กันแตก sub-agent ไปทำงานซ้ำกับตัวที่กำลังทำ/เพิ่งเสร็จ (ค่าเก่าที่ไม่มีช่องนี้ = เปิด) */
+  dedupe?: boolean
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'aborted' | 'denied' | 'unknown'
@@ -41,6 +45,8 @@ export type Run = {
   cacheWrite: number
   turns: number
   durationMs: number
+  /** คำสำคัญของงาน (description + ไฟล์ใน prompt) ไว้เทียบงานซ้ำ */
+  key?: string[]
 }
 
 export type LimitSnap = { kind: string; percent: number; resetsAt?: string }
@@ -88,6 +94,7 @@ declare module 'claude-code' {
       range: HistoryRange
       paneOpen: boolean
       notice: string
+      deduped: number
       config: Shaped<Config>
       runs: Shaped<Run[]>
       modelUsage: Shaped<ModelDay[]>

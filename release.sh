@@ -59,3 +59,8 @@ for d in "$HOME"/.claude "$HOME"/.claude-*; do
   fi
 done
 echo "เปิด session ใหม่ (หรือ /reload-plugins) เพื่อใช้เวอร์ชันใหม่ · เครื่องอื่นรัน: claude plugin update subagent-control@subagent-control"
+
+# แอป Claude desktop: ถ้ามี subagent-control จาก claude.ai (Organization library / My Uploads) แอปจะใช้ตัวนั้นก่อนตัวในเครื่องเสมอ
+# ("exists in both remote and local. Using remote.") — release นี้กับ /reload-plugins จึงไม่มีผลจนกว่าตัวบน claude.ai จะเป็นเวอร์ชันใหม่
+"$(dirname "$0")/check-remote.sh" "$cur" || true
+

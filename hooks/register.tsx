@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.14'
+const VERSION = '0.1.15'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -105,6 +105,8 @@ const DEFAULT_CONFIG: Config = {
   },
   maxParallel: 0,
   saverAt: 0,
+  bandHidden: false,
+  dedupe: true,
 }
 const EMPTY_USAGE: UsageSnap = { at: 0, startedAt: 0, limits: [], contextWindow: 0 }
 
@@ -120,6 +122,7 @@ const modelUsageAtom = atom({ plugin: 'subagent-control', key: 'modelUsage' } as
 })
 const sessionModelsAtom = atom({ plugin: 'subagent-control', key: 'sessionModels' } as const, [] as ModelDay[])
 const noticeAtom = atom({ plugin: 'subagent-control', key: 'notice' } as const, '')
+const dedupedAtom = atom({ plugin: 'subagent-control', key: 'deduped' } as const, 0)
 const usageAtom = atom({ plugin: 'subagent-control', key: 'usage' } as const, EMPTY_USAGE, {
   shape: 'usage-1',
 })
@@ -174,6 +177,152 @@ function roleOf(type: string, text: string): RoleId | undefined {
   if (/\b(review|design|plan|architect|analy[sz]e|advise|audit)\b|รีวิว|ออกแบบ|วางแผน|วิเคราะห์/.test(t)) return 'advisor'
   if (/\b(search|find|explore|locate|investigate|look for)\b|ค้นหา|หาไฟล์|สำรวจ/.test(t)) return 'explorer'
   return 'coder'
+}
+
+// ---------- กันงานซ้ำ ----------
+
+/** spawn ที่กำลังเริ่ม (ยังไม่อยู่ใน $.agent.list): กัน Agent call หลายตัวในข้อความเดียวหลุดซ้ำกัน */
+let inflight: { id: string; description: string; type: string; status: string; key: string[] }[] = []
+let inflightSeq = 0
+/** เวลาเริ่ม session นี้: งานของ session ก่อนไม่นับเป็น "เพิ่งเสร็จ" */
+let sessionStartedAt = 0
+
+/** ช่วงเวลาที่ถือว่างานที่เพิ่งเสร็จยัง "สด" (spawn ซ้ำในช่วงนี้ = ทำซ้ำ) */
+const RECENT_MS = 15 * 60 * 1000
+const STOP = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'in', 'on', 'with', 'from', 'by', 'at', 'is', 'it', 'this', 'that',
+  'again', 're', 'ซ้ำ', 'อีกครั้ง', 'ใหม่',
+])
+
+/** ตัดคำ: ภาษาไทยไม่มีช่องว่างคั่นคำ จึงใช้ Intl.Segmenter ถ้า runtime มี */
+function splitWords(text: string): string[] {
+  const chunks = text.split(/[^\p{L}\p{M}\p{N}_.\/-]+/u).filter(Boolean)
+  const Seg = (Intl as unknown as { Segmenter?: new (l: string, o: { granularity: 'word' }) => { segment(t: string): Iterable<{ segment: string; isWordLike?: boolean }> } }).Segmenter
+  if (!Seg) return chunks
+  const seg = new Seg('th', { granularity: 'word' })
+  return chunks.flatMap(c =>
+    /[\u0E00-\u0E7F]/.test(c) ? [...seg.segment(c)].filter(x => x.isWordLike !== false).map(x => x.segment) : [c],
+  )
+}
+
+/** คำสำคัญของงาน: คำใน description + path/ชื่อไฟล์ที่ prompt อ้างถึง */
+function taskKey(description: string, prompt: string): string[] {
+  const words = splitWords(description.toLowerCase())
+    .map(w => w.replace(/^[.\/-]+|[.\/-]+$/g, ''))
+    .filter(w => (w.length > 1 || /\d/.test(w)) && !STOP.has(w))
+  const files = (prompt.slice(0, 4000).match(/[\w.\/-]*[\w-]+\.[a-z]{1,5}\b/gi) ?? [])
+    .map(f => f.toLowerCase().replace(/^\.\//, ''))
+    .filter(f => /[\/]/.test(f) || /\.(tsx?|jsx?|py|go|rs|java|kt|swift|rb|php|cs|vue|svelte|sql|md|json|ya?ml)$/.test(f))
+  return [...new Set([...words, ...files.map(f => `file:${f}`)])]
+}
+
+function similarity(a: string[], b: string[]): number {
+  if (a.length === 0 || b.length === 0) return 0
+  const sb = new Set(b)
+  const inter = a.filter(x => sb.has(x)).length
+  return inter / (a.length + b.length - inter)
+}
+
+const normDesc = (d: string) => d.toLowerCase().replace(/\s+/g, ' ').trim()
+
+/** ไฟล์ context ที่ brief มักอ้างร่วมกัน (แผน, เอกสาร, config) — ไม่ใช่เป้าหมายของงาน */
+const isContextFile = (k: string) =>
+  /\.(md|mdx|txt|lock)$/.test(k) || /(^|\/)(package(-lock)?\.json|tsconfig[\w.-]*\.json|claude\.md|agents\.md|readme\.[a-z]+)$/.test(k)
+/** กริยาทั่วไปที่ไม่บอกเป้าหมาย */
+const GENERIC = new Set([
+  'review', 'check', 'fix', 'run', 'test', 'tests', 'implement', 'update', 'add', 'find', 'search', 'read', 'verify',
+  'รีวิว', 'ตรวจ', 'แก้', 'แก้ไข', 'รัน', 'เทสต์', 'ทดสอบ', 'ค้นหา', 'หา', 'อ่าน', 'เพิ่ม', 'เขียน',
+])
+
+/** กลุ่มของงาน: role ที่ mod จัดให้ (advisor แบบ Plan / general-purpose ที่ทำ review นับเป็นกลุ่มเดียวกัน) */
+const groupOf = (type: string, description: string) => roleOf(type, description) ?? type
+
+/** งานสองงานคือ "ที่เดิม" ไหม: กลุ่มเดียวกัน และ description เดียวกัน หรือคำสำคัญ/ไฟล์เป้าหมายทับกันเกือบหมด */
+function sameTask(
+  a: { type: string; description: string; key?: string[] },
+  b: { type: string; description: string; key?: string[] },
+  min: number,
+  byFiles: boolean,
+): boolean {
+  if (groupOf(a.type, a.description) !== groupOf(b.type, b.description)) return false
+  const ka = a.key ?? taskKey(a.description, '')
+  const kb = b.key ?? taskKey(b.description, '')
+  const fa = ka.filter(k => k.startsWith('file:') && !isContextFile(k))
+  const fb = kb.filter(k => k.startsWith('file:') && !isContextFile(k))
+  const fileSim = fa.length > 0 && fb.length > 0 ? similarity(fa, fb) : undefined
+  // description เดียวกันแต่ชี้ไฟล์คนละชุด (เช่น "Fix failing tests" คนละ package) = คนละงาน
+  if (fileSim !== undefined && fileSim < 0.3) return false
+  if (normDesc(a.description) !== '' && normDesc(a.description) === normDesc(b.description)) return true
+  // ไฟล์เป้าหมายชุดเดียวกัน + มีคำบอกเป้าหมายร่วมกัน = ที่เดิม แม้ description ต่างกัน
+  if (byFiles && fileSim !== undefined && fileSim >= 0.8) {
+    const wa = ka.filter(k => !k.startsWith('file:') && !GENERIC.has(k))
+    const wb = new Set(kb.filter(k => !k.startsWith('file:') && !GENERIC.has(k)))
+    if (wa.some(w => wb.has(w))) return true
+  }
+  return similarity(ka.filter(k => !k.startsWith('file:') || !isContextFile(k)), kb.filter(k => !k.startsWith('file:') || !isContextFile(k))) >= min
+}
+
+/** สถานะที่ยังถือว่าทำงานอยู่ (pending/running/waiting/idle) */
+const isActive = (status: string) => status !== 'completed' && status !== 'failed' && status !== 'killed'
+
+export type Duplicate = { kind: 'running' | 'recent'; id: string; description: string; type: string; name?: string; endedAt?: number }
+
+/** หา sub-agent ที่ทำงานเดียวกันอยู่ (ยังรันอยู่จริง) หรือเพิ่งทำเสร็จ */
+function findDuplicate(
+  want: { type: string; description: string; key: string[] },
+  live: ReadonlyArray<{ id: string; description: string; type: string; status: string; name?: string; key?: string[] }>,
+  runs: Run[],
+  now: number,
+  sinceMs: number,
+): Duplicate | undefined {
+  const keyOf = (id: string) => runs.find(r => r.agentId === id)?.key
+  for (const a of live) {
+    if (!isActive(a.status)) continue
+    if (sameTask({ ...a, key: a.key ?? keyOf(a.id) }, want, 0.6, true)) {
+      return { kind: 'running', id: a.id, description: a.description, type: a.type, name: a.name }
+    }
+  }
+  // งานที่เพิ่งเสร็จ: เฉพาะงานอ่านอย่างเดียว (รีวิว/ค้นหา) ใน session นี้ — รันเทสต์หรือแก้โค้ดซ้ำหลังแก้เป็นเรื่องปกติ
+  const g = groupOf(want.type, want.description)
+  if (g !== 'advisor' && g !== 'explorer') return undefined
+  const activeIds = new Set(live.filter(a => isActive(a.status)).map(a => a.id))
+  for (const r of [...runs].reverse()) {
+    if (r.status !== 'done' || r.endedAt === undefined || now - r.endedAt > RECENT_MS || activeIds.has(r.agentId)) continue
+    if (r.startedAt < sinceMs) continue
+    if (sameTask(r, want, 0.8, false)) {
+      return { kind: 'recent', id: r.agentId, description: r.description, type: r.type, endedAt: r.endedAt }
+    }
+  }
+  return undefined
+}
+
+/** agent ที่ยังทำงานอยู่: ถามจาก engine ($.agent.list) ถ้ามี ไม่งั้นใช้ประวัติของ mod เอง */
+async function liveAgents($: EngineInterface, runs: Run[], now: number) {
+  try {
+    return await $.agent.list()
+  } catch {
+    // engine เก่าหรือ list ล้มเหลว: ใช้ประวัติแทน
+  }
+  return runs
+    .filter(r => isLive(r, now))
+    .map(r => ({ id: r.agentId, description: r.description, type: r.type, status: 'running' as const }))
+}
+
+function duplicateReason(d: Duplicate, now: number): string {
+  const who = `"${d.description}" (${d.type}, id ${d.id}${d.name ? `, ชื่อ ${d.name}` : ''})`
+  if (d.kind === 'running') {
+    return [
+      `งานนี้ซ้ำกับ sub-agent ที่กำลังทำอยู่: ${who}.`,
+      'Do not start another agent on the same target. Wait for that agent\'s result' +
+        (d.name ? `, or send it extra instructions with SendMessage to "${d.name}"` : '') +
+        '. Do not do this work yourself in the main thread either.',
+    ].join(' ')
+  }
+  const mins = Math.max(1, Math.round((now - (d.endedAt ?? now)) / 60000))
+  return [
+    `งานนี้เพิ่งทำเสร็จไปเมื่อ ${mins} นาทีที่แล้วโดย ${who}.`,
+    'Use that agent\'s result instead of redoing it. Only if the code changed after it finished, spawn again with a description that names what changed, and limit the brief to those changes.',
+  ].join(' ')
 }
 
 function fmtTok(n: number): string {
@@ -302,6 +451,14 @@ async function setConfig($: EngineInterface, fn: (c: Config) => Config) {
   }
   return v
 }
+async function hideBand($: EngineInterface) {
+  await setConfig($, c => ({ ...c, bandHidden: true }))
+  try {
+    $.ui.toast('ซ่อนแถบ sub-agents แล้ว · แสดงคืนได้ที่แผง > ตั้งค่า หรือพิมพ์ /subagents band')
+  } catch {
+    // surface ที่ไม่มี toast
+  }
+}
 async function setRole($: EngineInterface, id: RoleId, patch: Partial<RoleRule>) {
   const v = await setConfig($, c => ({ ...c, roles: { ...c.roles, [id]: { ...c.roles[id], ...patch } } }))
   await syncAgent($, id, v)
@@ -354,9 +511,11 @@ function delegationPolicy(cfg: Config): string {
     '- Prefer these types over the built-in Explore, Plan and general-purpose agents for the same kind of work.',
     '- In plan mode, or whenever you are about to propose a plan or design, have the advisor draft or review it first and say in the plan that it did.',
     '- Start independent sub-agents in the same message so they run in parallel; wait for their results instead of redoing their work.',
+    '- One agent per task: never start a second agent of the same role on the same task while one is running, and never redo a review or search finished in this session unless the code changed since. Before each spawn, recall which agents are still running (background ones too, and after a context summary) and wait for them or message them with SendMessage instead. A duplicate spawn is denied with the agent it collides with.',
+    '- Review each piece once. Re-review only what changed after the review, and say what changed in the brief; never re-dispatch the same review batch.',
     '- Give each a self-contained brief (goal, files, what is already known, what to report back), since it does not see this conversation.',
-    '- Check what a sub-agent reports before you tell the user it is done.',
-    '- If a spawn is denied (the user capped how many run at once or turned a role off), do that step yourself.',
+    '- Check what a sub-agent reports yourself (read its diff or output) before you tell the user it is done; do not spawn another agent just to re-check the same work.',
+    '- If a spawn is denied because the user capped how many run at once or turned a role off, do that step yourself. If it is denied as a duplicate, do not do that work yourself either; wait for or reuse the other agent\'s result.',
     '- When the user asks whether sub-agents are being used, answer from the Agent calls you actually made.',
   ].join('\n')
 }
@@ -444,6 +603,9 @@ export const register: Register = on => {
     const storedModels = await $.store.get('model-usage-1')
     if (Array.isArray(storedModels)) await update($, modelUsageAtom, () => storedModels as ModelDay[])
     await update($, sessionModelsAtom, () => [])
+    await update($, dedupedAtom, () => 0)
+    inflight = []
+    sessionStartedAt = await $.clock.now()
 
     const storedRuns = await $.store.get('runs-2')
     if (Array.isArray(storedRuns)) {
@@ -455,8 +617,8 @@ export const register: Register = on => {
 
     await $.command.register({
       name: 'subagents',
-      description: 'เปิด/ปิดแผง sub-agents (ใส่ on หรือ off เพื่อเปิดปิดการใช้ sub-agents)',
-      argumentHint: '[on|off]',
+      description: 'เปิด/ปิดแผง sub-agents (on/off = เปิดปิดการใช้ sub-agents, band = ซ่อน/แสดงแถบเหนือช่องพิมพ์)',
+      argumentHint: '[on|off|band]',
     })
     let notice = ''
     for (const role of ROLES) {
@@ -489,6 +651,10 @@ export const register: Register = on => {
     if (arg === 'on' || arg === 'off') {
       await setConfig($, c => ({ ...c, enabled: arg === 'on' }))
       return { text: arg === 'on' ? 'sub-agents: เปิดใช้งานแล้ว' : 'sub-agents: ปิดแล้ว Claude จะทำงานเองใน thread หลัก' }
+    }
+    if (arg === 'band') {
+      const v = await setConfig($, c => ({ ...c, bandHidden: !c.bandHidden }))
+      return { text: v.bandHidden ? 'ซ่อนแถบ sub-agents เหนือช่องพิมพ์แล้ว' : 'แสดงแถบ sub-agents เหนือช่องพิมพ์แล้ว' }
     }
     if (await read($, paneOpenAtom)) {
       await closePane($)
@@ -583,6 +749,34 @@ export const register: Register = on => {
       }
     }
 
+    const key = taskKey(e.description, e.prompt)
+    // agent ลูกที่ sub-agent แตกเอง: ไม่เทียบ (ปัญหางานซ้ำเกิดที่ thread หลัก และลูกส่งข้อความหา agent สายอื่นไม่ได้)
+    const guard = cfg.dedupe !== false && !e.fork && e.parentAgentId === undefined
+    let slot: string | undefined
+    if (guard) {
+      const runs = await read($, runsAtom)
+      const live = await liveAgents($, runs, now)
+      // ตรวจ + จองช่องแบบ synchronous (ห้ามมี await คั่น) เพื่อให้ call ที่มาพร้อมกันเห็นกัน
+      const dup = findDuplicate(
+        { type: e.subagentType, description: e.description, key },
+        [...live, ...inflight],
+        runs,
+        now,
+        sessionStartedAt,
+      )
+      if (dup) {
+        try {
+          $.ui.toast(`กันงานซ้ำ: "${e.description}" ซ้ำกับ "${dup.description}" ${dup.kind === 'running' ? 'ที่กำลังทำอยู่' : 'ที่เพิ่งเสร็จ'}`)
+        } catch {
+          // surface ที่ไม่มี toast
+        }
+        await update($, dedupedAtom, n => n + 1)
+        return deny(duplicateReason(dup, now))
+      }
+      slot = `inflight-${++inflightSeq}`
+      inflight.push({ id: slot, description: e.description, type: e.subagentType, status: 'pending', key })
+    }
+
     let model = e.model
     if (!e.fork && rule && rule.enabled) {
       model = rule.model === 'inherit' ? e.parentModel : rule.model
@@ -592,10 +786,15 @@ export const register: Register = on => {
       }
     }
 
-    const res = await next({ ...e, model })
-    if (res.deny === undefined && res.agentId !== undefined) {
-      const agentId = res.agentId
-      await setRuns($, runs => [...runs, { ...base, agentId, model: res.model }])
+    let res: Awaited<ReturnType<typeof next>>
+    try {
+      res = await next({ ...e, model })
+      if (res.deny === undefined && res.agentId !== undefined) {
+        const agentId = res.agentId
+        await setRuns($, runs => [...runs, { ...base, agentId, model: res.model, key }])
+      }
+    } finally {
+      if (slot) inflight = inflight.filter(x => x.id !== slot)
     }
     return res
   })
@@ -657,8 +856,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
     const cfg = await read($, configAtom)
+    if (cfg.bandHidden) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const usage = await read($, usageAtom)
     const paneOpen = await read($, paneOpenAtom)
     const five = usage.limits.find(l => l.kind === 'five_hour')
@@ -684,6 +884,9 @@ export const register: Register = on => {
           onPress={() => (paneOpen ? closePane($) : openPane($))}>
           {paneOpen ? 'ซ่อน' : 'แสดง'}
         </Button>
+        <Button key="band:hide" plain dimColor onPress={() => hideBand($)}>
+          ✕ ซ่อนแถบ
+        </Button>
       </Box>
     )
   })
@@ -691,7 +894,11 @@ export const register: Register = on => {
   // ---------- แผง ----------
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Select } = $.ui.resolve(e)
+    const els = $.ui.resolve(e)
+    const { Box, Text, Button, Select } = els
+    const Svg = 'Svg' in els ? els.Svg : undefined
+    // ธีมมืดแบบการ์ด (แบบที่ 3) วาดบนพื้นที่มี Svg; terminal คงหน้าตาเดิม
+    const rich = Svg !== undefined
     const tab = await read($, tabAtom)
     const cfg = await read($, configAtom)
     const runs = await read($, runsAtom)
@@ -699,6 +906,7 @@ export const register: Register = on => {
     const acct = await read($, accountAtom)
     const range = await read($, rangeAtom)
     const notice = await read($, noticeAtom)
+    const deduped = await read($, dedupedAtom)
     const storedDays = await read($, modelUsageAtom)
     const sessionDays = await read($, sessionModelsAtom)
     const mainDays = range === 'session' ? sessionDays : storedDays
@@ -707,40 +915,93 @@ export const register: Register = on => {
     const barW = Math.max(8, Math.min(20, cols - 26))
     const live = runs.filter(r => isLive(r, now))
 
-    const heading = (title: string, hint?: string) => (
-      <Box flexDirection="column" marginTop={2}>
-        <Text bold>{title}</Text>
-        {hint && <Text dimColor>{hint}</Text>}
+    // สีของธีม (ใช้เฉพาะ rich)
+    const C = rich ? DARK : undefined
+    const txt = C?.text
+    const mut = C?.muted
+    // ข้อความรอง: rich ใช้สีเทาฟ้า, terminal ใช้ dim แบบเดิม
+    const dimP = rich ? { color: mut } : { dimColor: true as const }
+
+    const svg = (source: string, alt: string, width: number, height: number) =>
+      Svg ? <Svg source={source} alt={alt} width={width} height={height} /> : null
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const card = (key: string, children: any, marginTop = 1) =>
+      rich ? (
+        <Box
+          key={key}
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={C!.border}
+          backgroundColor={C!.card}
+          paddingX={2}
+          paddingY={1}
+          marginTop={marginTop}
+        >
+          {children}
+        </Box>
+      ) : (
+        <Box key={key} flexDirection="column">
+          {children}
+        </Box>
+      )
+
+    const heading = (title: string, hint?: string, icon?: string) => (
+      <Box flexDirection="column" marginTop={rich ? 0 : 2}>
+        <Box flexDirection="row" alignItems="center" gap={1}>
+          {icon && svg(icon, title, 18, 18)}
+          <Text bold color={txt}>
+            {title}
+          </Text>
+        </Box>
+        {hint && <Text {...dimP}>{hint}</Text>}
       </Box>
     )
 
     // แถวมาตรวัด: ป้ายอยู่คอลัมน์ซ้ายกว้างคงที่ แถบกับคำอธิบายอยู่คอลัมน์ขวา จึงตรงกันเสมอ
     const LABEL_W = 16
-    const meter = (key: string, label: string, pct: number, value: string, color: Color, sub?: string, extra?: string) => (
-      <Box key={key} flexDirection="row">
-        <Box width={LABEL_W} flexShrink={0}>
-          <Text>{label}</Text>
+    const barPx = Math.round(Math.max(100, Math.min(320, (cols - LABEL_W - 8) * 7.5)))
+    const meter = (
+      key: string,
+      label: string,
+      pct: number,
+      value: string,
+      color: Color,
+      sub?: string,
+      extra?: string,
+      icon?: string,
+      grad?: [string, string],
+    ) => (
+      <Box key={key} flexDirection="row" alignItems={rich ? 'center' : undefined}>
+        <Box width={LABEL_W} flexShrink={0} flexDirection="row" alignItems="center" gap={1}>
+          {icon && svg(icon, label, 18, 18)}
+          <Text color={txt}>{label}</Text>
         </Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-          <Text color={color}>{bar(pct, barW)}</Text>
-          <Text>
+          {rich ? svg(barSvg(pct, barPx, grad ?? [DARK.orange, DARK.claude]), `${label} ${value}`, barPx, 8) : <Text color={color}>{bar(pct, barW)}</Text>}
+          <Text color={txt}>
             <Text bold>{value}</Text>
-            {sub ? <Text dimColor> · {sub}</Text> : null}
+            {sub ? <Text {...dimP}> · {sub}</Text> : null}
           </Text>
-          {extra ? <Text dimColor>{extra}</Text> : null}
+          {extra ? <Text {...dimP}>{extra}</Text> : null}
         </Box>
       </Box>
     )
 
-    // การ์ดสถานะ: บอกสถานะชัด ๆ แยกจากปุ่มที่ใช้สั่ง
+    const statusLine = (
+      <Text color={txt}>
+        <Text color={cfg.enabled ? (rich ? DARK.green : 'success') : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
+        <Text bold> {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
+        <Text {...dimP}>  v{VERSION}</Text>
+      </Text>
+    )
+
+    // ส่วนหัว: โลโก้ + ปุ่มเปิด/ปิด, แล้วสถานะ
     const status = (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
-          <Text>
-            <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
-            <Text bold> {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
-            <Text dimColor>  v{VERSION}</Text>
-          </Text>
+          {rich ? svg(LOGO_SVG, 'Claude', 150, 40) : null}
+          {!rich && statusLine}
           <Button
             key="master"
             variant={cfg.enabled ? 'secondary' : 'primary'}
@@ -750,13 +1011,14 @@ export const register: Register = on => {
             {cfg.enabled ? 'ปิด sub-agents' : 'เปิด sub-agents'}
           </Button>
         </Box>
-        {cfg.enabled && live.length > 0 && <Text dimColor>ทำงานอยู่ {live.length} ตัว</Text>}
+        {rich && statusLine}
+        {cfg.enabled && live.length > 0 && <Text {...dimP}>ทำงานอยู่ {live.length} ตัว</Text>}
         {notice && <Text color="warning">⚠ {notice}</Text>}
       </Box>
     )
 
-    const tabs = (
-      <Box flexDirection="row" gap={1} marginTop={1}>
+    const tabRow = (
+      <Box flexDirection="row" gap={1}>
         {(
           [
             { id: 'models', label: 'โมเดล', hotkey: '1' },
@@ -774,6 +1036,21 @@ export const register: Register = on => {
           </Button>
         ))}
       </Box>
+    )
+    const tabs = rich ? (
+      <Box
+        flexDirection="row"
+        marginTop={1}
+        paddingX={1}
+        paddingY={0}
+        borderStyle="round"
+        borderColor={DARK.border}
+        backgroundColor={DARK.card}
+      >
+        {tabRow}
+      </Box>
+    ) : (
+      <Box marginTop={1}>{tabRow}</Box>
     )
 
     const data = (() => {
@@ -811,219 +1088,335 @@ export const register: Register = on => {
       const maxModelTok = Math.max(1, ...modelRows.map(([, g]) => g.main + g.sub))
       return { plan, list, counted, roleRows, maxTok, recent, modelRows, maxModelTok }
     })()
-    const { plan, list, counted, roleRows, maxTok, recent, modelRows, maxModelTok } = data
+    const { plan, counted, roleRows, maxTok, recent, modelRows, maxModelTok } = data
+
+    // วงแหวน usage (rich) หรือแถบแบบเดิม (terminal)
+    const ringPx = Math.round(Math.max(72, Math.min(112, ((cols - 10) / 3) * 7)))
+    const limitGrad = (pct: number, kind: string): [string, string] =>
+      pct >= 90 ? [DARK.red, '#f87171'] : pct >= 70 ? [DARK.amber, '#fbbf24'] : kind === 'five_hour' ? ['#22c55e', '#86efac'] : ['#16a34a', '#a3e635']
+    const ring = (key: string, pct: number, value: string, label: string, grad: [string, string], sub?: string, extra?: string) => (
+      <Box key={key} flexDirection="column" alignItems="center" flexGrow={1} minWidth={ringPx}>
+        {svg(ringSvg(pct, value, ringPx, grad), `${label} ${value}`, ringPx, ringPx)}
+        <Text color={txt}>{label}</Text>
+        {sub ? <Text {...dimP}>{sub}</Text> : null}
+        {extra ? <Text {...dimP}>{extra}</Text> : null}
+      </Box>
+    )
+
+    const rangeSelect = (
+      <Select key="range" options={RANGE_OPTS} value={range} onSelect={v => update($, rangeAtom, () => v as HistoryRange)} />
+    )
 
     // ----- แท็บโมเดล: account + usage + การใช้ตามโมเดล -----
     const modelsTab = () => (
       <Box flexDirection="column">
-          {heading('Account')}
-          {acct.source === 'none' ? (
-            <Text dimColor>อ่านข้อมูล account ไม่ได้ (เช่น ใช้ API key หรือ cloud provider)</Text>
-          ) : (
-            <Box flexDirection="column" marginTop={1}>
-              <Text>
-                {acct.name ?? '-'}
-                {plan && <Text color="claude"> · {plan}</Text>}
-              </Text>
-              {acct.email && <Text dimColor>{acct.email}</Text>}
-              {acct.org && (
-                <Text dimColor>
-                  {acct.org}
-                  {acct.role ? ` · ${acct.role}` : ''}
-                  {acct.extraUsage ? ' · extra usage เปิด' : ''}
-                </Text>
+        {card(
+          'card:account',
+          <Box flexDirection="row" gap={2} alignItems="center">
+            {rich && svg(AVATAR_SVG, 'account', 44, 44)}
+            <Box flexDirection="column" flexShrink={1}>
+              {heading('Account')}
+              {acct.source === 'none' ? (
+                <Text {...dimP}>อ่านข้อมูล account ไม่ได้ (เช่น ใช้ API key หรือ cloud provider)</Text>
+              ) : (
+                <Box flexDirection="column" marginTop={rich ? 0 : 1}>
+                  <Text color={txt}>
+                    {acct.name ?? '-'}
+                    {plan && <Text color={rich ? DARK.claude : 'claude'}> · {plan}</Text>}
+                  </Text>
+                  {acct.email && <Text {...dimP}>{acct.email}</Text>}
+                  {acct.org && (
+                    <Text {...dimP}>
+                      {acct.org}
+                      {acct.role ? ` · ${acct.role}` : ''}
+                      {acct.extraUsage ? ' · extra usage เปิด' : ''}
+                    </Text>
+                  )}
+                </Box>
               )}
             </Box>
-          )}
+          </Box>,
+        )}
 
-          {heading('Usage')}
-          {usage.limits.length === 0 && <Text dimColor>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text>}
-          <Box flexDirection="column" gap={1} marginTop={1}>
-            {usage.limits.map(l => {
-              const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
-              return meter(
-                `lim:${l.kind}`,
-                LIMIT_LABEL[l.kind] ?? l.kind,
-                l.percent,
-                `${Math.round(l.percent)}%`,
-                l.percent >= 90 ? 'error' : l.percent >= 70 ? 'warning' : 'success',
-                reset,
-                left,
-              )
-            })}
-            {usage.contextWindow > 0 &&
-              meter(
-                'context',
-                'Context',
-                usage.contextPercent ?? 0,
-                `${Math.round(usage.contextPercent ?? 0)}%`,
-                'suggestion',
-                `${fmtTok(usage.contextTokens ?? 0)} จาก ${fmtTok(usage.contextWindow)} tokens`,
-              )}
-          </Box>
-
-          <Box flexDirection="row" alignItems="center" gap={1} marginTop={2}>
-            <Text bold>การใช้ตามโมเดล</Text>
-            <Select
-              key="range"
-              options={RANGE_OPTS}
-              value={range}
-              onSelect={v => update($, rangeAtom, () => v as HistoryRange)}
-            />
-          </Box>
-          <Text>{fmtTok(modelRows.reduce((t, [, g]) => t + g.main + g.sub, 0))} tokens</Text>
-          {modelRows.length === 0 && <Text dimColor>ยังไม่มีข้อมูลในช่วงนี้ (เริ่มนับตั้งแต่ติดตั้งเวอร์ชันนี้)</Text>}
-          {modelRows.length > 0 && (
+        {card('card:usage', [
+          heading('Usage', undefined, ICON_USAGE),
+          usage.limits.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text> : null,
+          rich ? (
+            <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
+              {usage.limits.map(l => {
+                const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
+                return ring(`lim:${l.kind}`, l.percent, `${Math.round(l.percent)}%`, LIMIT_LABEL[l.kind] ?? l.kind, limitGrad(l.percent, l.kind), reset, left)
+              })}
+              {usage.contextWindow > 0 &&
+                ring(
+                  'context',
+                  usage.contextPercent ?? 0,
+                  `${Math.round(usage.contextPercent ?? 0)}%`,
+                  'Context',
+                  [DARK.blue, '#60a5fa'],
+                  `${fmtTok(usage.contextTokens ?? 0)} จาก ${fmtTok(usage.contextWindow)} tokens`,
+                )}
+            </Box>
+          ) : (
             <Box flexDirection="column" gap={1} marginTop={1}>
-              {modelRows.map(([k, g]) =>
+              {usage.limits.map(l => {
+                const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
+                return meter(
+                  `lim:${l.kind}`,
+                  LIMIT_LABEL[l.kind] ?? l.kind,
+                  l.percent,
+                  `${Math.round(l.percent)}%`,
+                  l.percent >= 90 ? 'error' : l.percent >= 70 ? 'warning' : 'success',
+                  reset,
+                  left,
+                )
+              })}
+              {usage.contextWindow > 0 &&
                 meter(
+                  'context',
+                  'Context',
+                  usage.contextPercent ?? 0,
+                  `${Math.round(usage.contextPercent ?? 0)}%`,
+                  'suggestion',
+                  `${fmtTok(usage.contextTokens ?? 0)} จาก ${fmtTok(usage.contextWindow)} tokens`,
+                )}
+            </Box>
+          ),
+        ])}
+
+        {card('card:models', [
+          <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1} marginTop={rich ? 0 : 2}>
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              {svg(ICON_CUBE, 'models', 18, 18)}
+              <Text bold color={txt}>
+                การใช้ตามโมเดล
+              </Text>
+            </Box>
+            {rangeSelect}
+          </Box>,
+          <Text color={txt}>{fmtTok(modelRows.reduce((t, [, g]) => t + g.main + g.sub, 0))} tokens</Text>,
+          modelRows.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูลในช่วงนี้ (เริ่มนับตั้งแต่ติดตั้งเวอร์ชันนี้)</Text> : null,
+          modelRows.length > 0 ? (
+            <Box flexDirection="column" gap={1} marginTop={1}>
+              {modelRows.map(([k, g]) => {
+                const look = modelLook(k)
+                return meter(
                   `model:${k}`,
                   k,
                   ((g.main + g.sub) / maxModelTok) * 100,
                   fmtTok(g.main + g.sub),
                   'claude',
                   `main ${fmtTok(g.main)} · sub-agents ${fmtTok(g.sub)}`,
-                ),
-              )}
+                  undefined,
+                  rich ? look.icon : undefined,
+                  look.grad,
+                )
+              })}
             </Box>
-          )}
-          <Box flexDirection="row" gap={1} marginTop={1}>
-            <Button
-              key="refresh"
-              dimColor
-              onPress={async () => {
-                await refreshUsage($)
-                const a = await loadAccount($)
-                await update($, accountAtom, () => a)
-              }}
-            >
-              รีเฟรช
-            </Button>
-          </Box>
+          ) : null,
+        ])}
+
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button
+            key="refresh"
+            dimColor
+            onPress={async () => {
+              await refreshUsage($)
+              const a = await loadAccount($)
+              await update($, accountAtom, () => a)
+            }}
+          >
+            รีเฟรช
+          </Button>
+        </Box>
       </Box>
     )
 
     // ----- แท็บ sub-agents: การใช้ + ประวัติ -----
     const agentsTab = () => (
       <Box flexDirection="column">
-          <Box flexDirection="row" alignItems="center" gap={1} marginTop={2}>
-            <Text bold>การใช้ sub-agents</Text>
-            <Select
-              key="range"
-              options={RANGE_OPTS}
-              value={range}
-              onSelect={v => update($, rangeAtom, () => v as HistoryRange)}
-            />
-          </Box>
-          <Text>
+        {card('card:agentUse', [
+          <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1} marginTop={rich ? 0 : 2}>
+            <Box flexDirection="row" alignItems="center" gap={1}>
+              {svg(ICON_USAGE, 'usage', 18, 18)}
+              <Text bold color={txt}>
+                การใช้ sub-agents
+              </Text>
+            </Box>
+            {rangeSelect}
+          </Box>,
+          <Text color={txt}>
             {counted.length} ครั้ง · {fmtTok(counted.reduce((s, r) => s + totalTok(r), 0))} tokens
-          </Text>
-          {roleRows.length > 0 && (
+          </Text>,
+          roleRows.length > 0 ? (
             <Box flexDirection="column" gap={1} marginTop={1}>
               {roleRows.map(([k, g]) =>
-                meter(`role:${k}`, k, (g.tok / maxTok) * 100, fmtTok(g.tok), 'claude', `${g.n} ครั้ง · ${[...g.models].join(', ')}`),
+                meter(`role:${k}`, k, (g.tok / maxTok) * 100, fmtTok(g.tok), 'claude', `${g.n} ครั้ง · ${[...g.models].join(', ')}`, undefined, undefined, [
+                  DARK.accent,
+                  '#a78bfa',
+                ]),
               )}
             </Box>
-          )}
+          ) : null,
+        ])}
 
-          {heading("ประวัติล่าสุด")}
-          <Box marginTop={1} />
-          {recent.length === 0 && <Text dimColor>ยังไม่มี sub-agents ในช่วงนี้</Text>}
-          {recent.map(r => {
-            const live = isLive(r, now)
-            const st = r.status === 'running' && !live ? 'unknown' : r.status
+        {card('card:history', [
+          heading('ประวัติล่าสุด'),
+          <Box marginTop={1} />,
+          recent.length === 0 ? <Text {...dimP}>ยังไม่มี sub-agents ในช่วงนี้</Text> : null,
+          ...recent.map(r => {
+            const isOn = isLive(r, now)
+            const st = r.status === 'running' && !isOn ? 'unknown' : r.status
+            const stColor = rich
+              ? st === 'running'
+                ? DARK.blue
+                : st === 'done'
+                  ? DARK.green
+                  : st === 'failed'
+                    ? DARK.red
+                    : DARK.muted
+              : st === 'running'
+                ? 'suggestion'
+                : st === 'done'
+                  ? 'success'
+                  : st === 'failed'
+                    ? 'error'
+                    : 'inactive'
             return (
               <Box key={`run:${r.agentId}`} flexDirection="column" marginBottom={1}>
-                <Text>
-                  <Text dimColor>
+                <Text color={txt}>
+                  <Text {...dimP}>
                     {range === 'week' || range === 'all' ? `${fmtDay(r.startedAt)} ` : ''}
                     {timeTh(r.startedAt)}{' '}
                   </Text>
                   <Text bold>{roleLabel(r.role)}</Text>
-                  <Text dimColor> · {modelName(r.model)}</Text>
-                  <Text color={st === 'running' ? 'suggestion' : st === 'done' ? 'success' : st === 'failed' ? 'error' : 'inactive'}>
+                  <Text {...dimP}> · {modelName(r.model)}</Text>
+                  <Text color={stColor}>
                     {' '}
                     {STATUS_LABEL[st]}
                   </Text>
                 </Text>
-                <Text dimColor>
+                <Text {...dimP}>
                   {'      '}
                   {r.description || r.type}
                 </Text>
-                <Text dimColor>
+                <Text {...dimP}>
                   {'      '}
-                  {`${fmtTok(totalTok(r))} tokens (in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}) · ${fmtDur(r.durationMs || (live ? now - r.startedAt : 0))}`}
+                  {`${fmtTok(totalTok(r))} tokens (in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}) · ${fmtDur(r.durationMs || (isOn ? now - r.startedAt : 0))}`}
                 </Text>
               </Box>
             )
-          })}
-          <Box flexDirection="row" gap={1} marginTop={1}>
-            <Button key="clear" dimColor onPress={() => setRuns($, () => [])}>
-              ล้างประวัติ
-            </Button>
-          </Box>
+          }),
+        ])}
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button key="clear" dimColor onPress={() => setRuns($, () => [])}>
+            ล้างประวัติ
+          </Button>
+        </Box>
       </Box>
     )
 
     // ----- ตั้งค่า role: แถวละ role กระชับ ๆ -----
     const roles = () => (
-      <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="column" gap={1}>
-          {ROLES.map(def => {
-            const rule = cfg.roles[def.id]
-            return (
-              <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1}>
-                <Box width={18} flexShrink={0}>
-                  <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
-                    <Text color={rule.enabled ? 'success' : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
-                    <Text bold={rule.enabled} dimColor={!rule.enabled}> {def.name}</Text>
-                  </Button>
-                </Box>
-                {rule.enabled ? (
-                  <Box flexDirection="row" gap={1}>
-                    <Select
-                      key={`model:${def.id}`}
-                      options={MODEL_OPTS}
-                      value={rule.model}
-                      onSelect={v => setRole($, def.id, { model: v as ModelChoice })}
-                    />
-                    <Select
-                      key={`effort:${def.id}`}
-                      options={EFFORT_OPTS}
-                      value={rule.effort}
-                      onSelect={v => setRole($, def.id, { effort: v as EffortChoice })}
-                    />
+      <Box flexDirection="column" marginTop={rich ? 0 : 1}>
+        {card(
+          'card:roles',
+          <Box flexDirection="column" gap={1}>
+            {ROLES.map(def => {
+              const rule = cfg.roles[def.id]
+              return (
+                <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1}>
+                  <Box width={18} flexShrink={0}>
+                    <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
+                      <Text color={rule.enabled ? (rich ? DARK.green : 'success') : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
+                      <Text bold={rule.enabled} dimColor={!rule.enabled} color={rule.enabled ? txt : undefined}>
+                        {' '}
+                        {def.name}
+                      </Text>
+                    </Button>
                   </Box>
-                ) : (
-                  <Text dimColor>ไม่ใช้</Text>
-                )}
-              </Box>
-            )
-          })}
-        </Box>
+                  {rule.enabled ? (
+                    <Box flexDirection="row" gap={1}>
+                      <Select
+                        key={`model:${def.id}`}
+                        options={MODEL_OPTS}
+                        value={rule.model}
+                        onSelect={v => setRole($, def.id, { model: v as ModelChoice })}
+                      />
+                      <Select
+                        key={`effort:${def.id}`}
+                        options={EFFORT_OPTS}
+                        value={rule.effort}
+                        onSelect={v => setRole($, def.id, { effort: v as EffortChoice })}
+                      />
+                    </Box>
+                  ) : (
+                    <Text {...dimP}>ไม่ใช้</Text>
+                  )}
+                </Box>
+              )
+            })}
+          </Box>,
+        )}
 
-        {heading('ขีดจำกัด')}
-        <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-          <Select
-            key="saver"
-            options={SAVER_OPTS}
-            value={String(cfg.saverAt)}
-            onSelect={v => setConfig($, c => ({ ...c, saverAt: Number(v) }))}
-          />
-          <Select
-            key="maxParallel"
-            options={PARALLEL_OPTS}
-            value={String(cfg.maxParallel)}
-            onSelect={v => setConfig($, c => ({ ...c, maxParallel: Number(v) }))}
-          />
-        </Box>
-        <Text dimColor>โหมดประหยัด: ทุก role เปลี่ยนเป็น Haiku เมื่อ usage ถึงระดับที่เลือก</Text>
+        {card('card:limits', [
+          heading('ขีดจำกัด'),
+          <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+            <Select
+              key="saver"
+              options={SAVER_OPTS}
+              value={String(cfg.saverAt)}
+              onSelect={v => setConfig($, c => ({ ...c, saverAt: Number(v) }))}
+            />
+            <Select
+              key="maxParallel"
+              options={PARALLEL_OPTS}
+              value={String(cfg.maxParallel)}
+              onSelect={v => setConfig($, c => ({ ...c, maxParallel: Number(v) }))}
+            />
+          </Box>,
+          <Text {...dimP}>โหมดประหยัด: ทุก role เปลี่ยนเป็น Haiku เมื่อ usage ถึงระดับที่เลือก</Text>,
+        ])}
+
+        {card('card:dedupe', [
+          heading('กันงานซ้ำ', 'ไม่ให้แตก sub-agent ตัวใหม่ไปทำงานเดียวกับตัวที่กำลังทำอยู่หรือเพิ่งเสร็จ'),
+          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" marginTop={1}>
+            <Text {...dimP}>
+              {cfg.dedupe !== false ? 'เปิดอยู่' : 'ปิดอยู่'}
+              {deduped > 0 ? ` · กันไปแล้ว ${deduped} ครั้งใน session นี้` : ''}
+            </Text>
+            <Button
+              key="dedupeToggle"
+              variant={cfg.dedupe !== false ? 'secondary' : 'primary'}
+              dimColor={cfg.dedupe !== false}
+              onPress={() => setConfig($, c => ({ ...c, dedupe: c.dedupe === false }))}
+            >
+              {cfg.dedupe !== false ? 'ปิดการกัน' : 'เปิดการกัน'}
+            </Button>
+          </Box>,
+        ])}
+
+        {card('card:band', [
+          heading('แถบเหนือช่องพิมพ์'),
+          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" marginTop={1}>
+            <Text {...dimP}>{cfg.bandHidden ? 'ซ่อนอยู่' : 'แสดงอยู่'}</Text>
+            <Button
+              key="bandToggle"
+              variant={cfg.bandHidden ? 'primary' : 'secondary'}
+              dimColor={!cfg.bandHidden}
+              onPress={() => setConfig($, c => ({ ...c, bandHidden: !c.bandHidden }))}
+            >
+              {cfg.bandHidden ? 'แสดงแถบ' : 'ซ่อนแถบ'}
+            </Button>
+          </Box>,
+        ])}
+
         <Box marginTop={1}>
           <Button
             key="reset"
             dimColor
             onPress={async () => {
-              const v = await setConfig($, c => ({ ...DEFAULT_CONFIG, enabled: c.enabled }))
+              const v = await setConfig($, c => ({ ...DEFAULT_CONFIG, enabled: c.enabled, bandHidden: c.bandHidden, dedupe: c.dedupe }))
               for (const r of ROLES) await syncAgent($, r.id, v)
             }}
           >
@@ -1033,7 +1426,13 @@ export const register: Register = on => {
       </Box>
     )
 
-    return (
+    return rich ? (
+      <Box flexDirection="column" backgroundColor={DARK.bg} paddingX={2} paddingY={1}>
+        {status}
+        {tabs}
+        {tab === 'roles' ? roles() : tab === 'agents' ? agentsTab() : modelsTab()}
+      </Box>
+    ) : (
       <Box flexDirection="column" paddingX={1}>
         {status}
         {tabs}
@@ -1041,4 +1440,86 @@ export const register: Register = on => {
       </Box>
     )
   })
+}
+
+// ---------- ธีมมืดของแผง (แบบที่ 3) ----------
+
+const DARK = {
+  bg: '#0e1726',
+  card: '#152238',
+  border: '#28395a',
+  track: '#26364f',
+  text: '#eef3fa',
+  muted: '#9fb0c8',
+  accent: '#6366f1',
+  green: '#4ade80',
+  blue: '#3b82f6',
+  orange: '#f97316',
+  claude: '#f0845a',
+  purple: '#a855f7',
+  amber: '#f59e0b',
+  red: '#ef4444',
+}
+
+const XMLNS = 'xmlns="http://www.w3.org/2000/svg"'
+
+function asterisk(cx: number, cy: number, r: number, color: string, w: number): string {
+  let d = ''
+  for (let i = 0; i < 12; i++) {
+    const a = (i * Math.PI) / 6
+    const len = i % 2 ? r * 0.78 : r
+    d += `M${cx + Math.cos(a) * r * 0.18} ${cy + Math.sin(a) * r * 0.18}L${(cx + Math.cos(a) * len).toFixed(2)} ${(cy + Math.sin(a) * len).toFixed(2)}`
+  }
+  return `<path d="${d}" stroke="${color}" stroke-width="${w}" stroke-linecap="round" fill="none"/>`
+}
+
+const LOGO_SVG = `<svg ${XMLNS} width="150" height="40" viewBox="0 0 150 40">${asterisk(18, 20, 16, DARK.claude, 3.4)}<text x="42" y="29" font-family="-apple-system,Segoe UI,sans-serif" font-size="27" font-weight="700" fill="${DARK.text}">Claude</text></svg>`
+
+const AVATAR_SVG = `<svg ${XMLNS} width="44" height="44" viewBox="0 0 44 44"><defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a4d6e"/><stop offset="1" stop-color="#253550"/></linearGradient></defs><circle cx="22" cy="22" r="22" fill="url(#a)"/><circle cx="22" cy="17" r="7" fill="#e6edf7"/><path d="M9 36c2-7 7-10 13-10s11 3 13 10z" fill="#e6edf7"/></svg>`
+
+const ICON_USAGE = `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18"><rect x="2" y="8" width="3.5" height="8" rx="1" fill="#818cf8"/><rect x="7.25" y="3" width="3.5" height="13" rx="1" fill="#60a5fa"/><rect x="12.5" y="6" width="3.5" height="10" rx="1" fill="#818cf8"/></svg>`
+
+const ICON_CUBE = `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#a5b4fc" stroke-width="1.6" stroke-linejoin="round"><path d="M9 1.8l6.4 3.6v7.2L9 16.2 2.6 12.6V5.4z"/><path d="M2.6 5.4L9 9l6.4-3.6M9 9v7.2"/></svg>`
+
+const MODEL_LOOKS: { match: RegExp; icon: string; grad: [string, string] }[] = [
+  {
+    match: /opus/i,
+    icon: `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18">${asterisk(9, 9, 8, DARK.orange, 1.8)}</svg>`,
+    grad: ['#f97316', '#fb923c'],
+  },
+  {
+    match: /haiku/i,
+    icon: `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18"><path d="M9 1C9.8 6 12 8.2 17 9 12 9.8 9.8 12 9 17 8.2 12 6 9.8 1 9 6 8.2 8.2 6 9 1z" fill="${DARK.purple}"/></svg>`,
+    grad: ['#f97316', '#fb923c'],
+  },
+  {
+    match: /sonnet/i,
+    icon: `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18"><path d="M9 1.5L16.5 9 9 16.5 1.5 9z" fill="${DARK.blue}"/></svg>`,
+    grad: ['#3b82f6', '#60a5fa'],
+  },
+]
+
+function modelLook(name: string): { icon: string; grad: [string, string] } {
+  return (
+    MODEL_LOOKS.find(m => m.match.test(name)) ?? {
+      icon: `<svg ${XMLNS} width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6" fill="${DARK.muted}"/></svg>`,
+      grad: ['#64748b', '#94a3b8'],
+    }
+  )
+}
+
+function barSvg(pct: number, w: number, [c1, c2]: [string, string]): string {
+  const p = Math.max(0, Math.min(100, pct))
+  const fill = p > 0 ? Math.max(8, (p / 100) * w) : 0
+  return `<svg ${XMLNS} width="${w}" height="8" viewBox="0 0 ${w} 8"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="${w}" height="8" rx="4" fill="${DARK.track}"/>${fill ? `<rect width="${fill.toFixed(1)}" height="8" rx="4" fill="url(#g)"/>` : ''}</svg>`
+}
+
+function ringSvg(pct: number, value: string, size: number, [c1, c2]: [string, string]): string {
+  const p = Math.max(0, Math.min(100, pct))
+  const sw = Math.max(6, size * 0.085)
+  const r = (size - sw) / 2 - 1
+  const c = size / 2
+  const len = 2 * Math.PI * r
+  const font = Math.round(size * 0.22)
+  return `<svg ${XMLNS} width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="${DARK.track}" stroke-width="${sw.toFixed(1)}"/>${p > 0 ? `<circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="url(#g)" stroke-width="${sw.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${((p / 100) * len).toFixed(1)} ${len.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/>` : ''}<text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" font-family="-apple-system,Segoe UI,sans-serif" font-size="${font}" font-weight="700" fill="${DARK.text}">${value}</text></svg>`
 }
