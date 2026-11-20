@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.16'
+const VERSION = '0.1.17'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -1117,15 +1117,31 @@ export const register: Register = on => {
     })()
     const { plan, counted, roleRows, maxTok, recent, modelRows, maxModelTok } = data
 
+    // ราย 5 ชม.: engine ส่งมาเฉพาะรอบที่มีข้อมูลล่าสุด พอรอบหมดและยังไม่มีข้อความใหม่ รอบนี้จะหายไป
+    // (หรือยังเป็นตัวเลขเก่าที่เลยเวลารีเซ็ตแล้ว) จึงแสดงเป็น 0% ไว้ให้เสมอเมื่อเป็นบัญชีที่มีขีดจำกัด
+    const limits = (() => {
+      if (usage.limits.length === 0) return usage.limits
+      const fresh = usage.limits.map(l =>
+        l.kind === 'five_hour' && l.resetsAt && Date.parse(l.resetsAt) <= now ? { ...l, percent: 0, resetsAt: undefined } : l,
+      )
+      return fresh.some(l => l.kind === 'five_hour')
+        ? fresh
+        : [{ kind: 'five_hour', percent: 0, resetsAt: undefined }, ...fresh]
+    })()
+
     // วงแหวน usage (rich) หรือแถบแบบเดิม (terminal)
-    const ringN = Math.max(1, usage.limits.length + (usage.contextWindow > 0 ? 1 : 0))
-    const ringPx = ringN <= 3 ? 96 : 80
+    const ringN = Math.max(1, limits.length + (usage.contextWindow > 0 ? 1 : 0))
+    const ringPx = ringN <= 3 ? 72 : 60
     const limitGrad = (pct: number, kind: string): [string, string] =>
       pct >= 90 ? [DARK.red, '#f87171'] : pct >= 70 ? [DARK.amber, '#fbbf24'] : kind === 'five_hour' ? ['#22c55e', '#86efac'] : ['#16a34a', '#a3e635']
     const ring = (key: string, pct: number, value: string, label: string, grad: [string, string], sub?: string, extra?: string) => (
       <Box key={key} flexDirection="column" alignItems="center" flexGrow={1} flexShrink={1}>
-        {svg(ringSvg(pct, '', ringPx, grad), `${label} ${value}`)}
-        <Text bold>{value}</Text>
+        <Box position="relative" alignItems="center" justifyContent="center">
+          {svg(ringSvg(pct, '', ringPx, grad), `${label} ${value}`)}
+          <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center">
+            <Text bold>{value}</Text>
+          </Box>
+        </Box>
         <Text color={txt}>{label}</Text>
         {sub ? <Text {...dimP}>{sub}</Text> : null}
         {extra ? <Text {...dimP}>{extra}</Text> : null}
@@ -1169,12 +1185,12 @@ export const register: Register = on => {
 
         {card('card:usage', [
           heading('Usage', undefined, ICON_USAGE),
-          usage.limits.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text> : null,
+          limits.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text> : null,
           rich ? (
             <Box flexDirection="row" justifyContent="space-around" gap={1} flexWrap="wrap">
-              {usage.limits.map(l => {
+              {limits.map(l => {
                 const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
-                return ring(`lim:${l.kind}`, l.percent, `${Math.round(l.percent)}%`, LIMIT_LABEL[l.kind] ?? l.kind, limitGrad(l.percent, l.kind), left || reset)
+                return ring(`lim:${l.kind}`, l.percent, `${Math.round(l.percent)}%`, LIMIT_LABEL[l.kind] ?? l.kind, limitGrad(l.percent, l.kind), left || reset || (l.kind === 'five_hour' ? 'ยังไม่เริ่มรอบใหม่' : undefined))
               })}
               {usage.contextWindow > 0 &&
                 ring(
@@ -1188,7 +1204,7 @@ export const register: Register = on => {
             </Box>
           ) : (
             <Box flexDirection="column" gap={1}>
-              {usage.limits.map(l => {
+              {limits.map(l => {
                 const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
                 return meter(
                   `lim:${l.kind}`,
