@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.15'
+const VERSION = '0.1.16'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -147,11 +147,11 @@ const EFFORT_OPTS: { value: EffortChoice; label: string }[] = [
 ]
 const PARALLEL_OPTS = ['0', '1', '2', '3', '4', '6', '8'].map(v => ({
   value: v,
-  label: v === '0' ? 'พร้อมกัน: ไม่จำกัด' : `พร้อมกัน: ${v} ตัว`,
+  label: v === '0' ? 'ไม่จำกัด' : `${v} ตัว`,
 }))
 const SAVER_OPTS = ['0', '50', '70', '80', '90'].map(v => ({
   value: v,
-  label: v === '0' ? 'โหมดประหยัด: ปิด' : `ประหยัดเมื่อ 5 ชม. ≥ ${v}%`,
+  label: v === '0' ? 'ปิด' : `≥ ${v}%`,
 }))
 const RANGE_OPTS: { value: HistoryRange; label: string }[] = [
   { value: 'session', label: 'เซสชันนี้' },
@@ -915,15 +915,18 @@ export const register: Register = on => {
     const barW = Math.max(8, Math.min(20, cols - 26))
     const live = runs.filter(r => isLive(r, now))
 
-    // สีของธีม (ใช้เฉพาะ rich)
-    const C = rich ? DARK : undefined
-    const txt = C?.text
-    const mut = C?.muted
+    // การ์ดและตัวอักษรใช้สีตามธีมของแอป (สว่าง/มืดตามที่ผู้ใช้ตั้ง)
+    const txt = undefined
+    const mut = undefined
     // ข้อความรอง: rich ใช้สีเทาฟ้า, terminal ใช้ dim แบบเดิม
-    const dimP = rich ? { color: mut } : { dimColor: true as const }
+    const dimP = { dimColor: true as const }
 
-    const svg = (source: string, alt: string, width: number, height: number) =>
+    const lbl = (s: string) => s
+
+    const svg = (source: string, alt: string, width?: number, height?: number) =>
       Svg ? <Svg source={source} alt={alt} width={width} height={height} /> : null
+    // ปุ่ม native ของแอปใช้สีตามธีมแอป: บนพื้นมืดใช้ primary (พื้นทึบ ตัวขาว) ทุกปุ่ม แล้วใช้ dim แยกตัวรอง
+    const variant = (main: boolean): 'primary' | 'secondary' => (main ? 'primary' : 'secondary')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const card = (key: string, children: any, marginTop = 1) =>
@@ -932,10 +935,9 @@ export const register: Register = on => {
           key={key}
           flexDirection="column"
           borderStyle="round"
-          borderColor={C!.border}
-          backgroundColor={C!.card}
           paddingX={2}
           paddingY={1}
+          gap={1}
           marginTop={marginTop}
         >
           {children}
@@ -946,21 +948,38 @@ export const register: Register = on => {
         </Box>
       )
 
-    const heading = (title: string, hint?: string, icon?: string) => (
-      <Box flexDirection="column" marginTop={rich ? 0 : 2}>
-        <Box flexDirection="row" alignItems="center" gap={1}>
-          {icon && svg(icon, title, 18, 18)}
-          <Text bold color={txt}>
-            {title}
-          </Text>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const heading = (title: string, hint?: string, icon?: string, right?: any) => (
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap" marginTop={rich ? 0 : 2}>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            {icon && svg(icon, title, 18, 18)}
+            <Text bold color={txt}>
+              {title}
+            </Text>
+          </Box>
+          {hint && <Text {...dimP}>{hint}</Text>}
         </Box>
-        {hint && <Text {...dimP}>{hint}</Text>}
+        {right ? <Box flexShrink={0}>{right}</Box> : null}
+      </Box>
+    )
+
+    // แถวฟอร์ม: ป้าย (+คำอธิบาย) ชิดซ้าย ตัวควบคุมชิดขวา แยกกันชัด; แผงแคบตัวควบคุมลงบรรทัดใหม่
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const field = (key: string, label: any, control: any, hint?: string) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          {typeof label === 'string' ? <Text color={txt}>{label}</Text> : label}
+          {hint ? <Text {...dimP}>{hint}</Text> : null}
+        </Box>
+        <Box flexDirection="row" gap={1} flexShrink={0} justifyContent="flex-end">
+          {control}
+        </Box>
       </Box>
     )
 
     // แถวมาตรวัด: ป้ายอยู่คอลัมน์ซ้ายกว้างคงที่ แถบกับคำอธิบายอยู่คอลัมน์ขวา จึงตรงกันเสมอ
     const LABEL_W = 16
-    const barPx = Math.round(Math.max(100, Math.min(320, (cols - LABEL_W - 8) * 7.5)))
     const meter = (
       key: string,
       label: string,
@@ -971,14 +990,30 @@ export const register: Register = on => {
       extra?: string,
       icon?: string,
       grad?: [string, string],
-    ) => (
-      <Box key={key} flexDirection="row" alignItems={rich ? 'center' : undefined}>
+    ) =>
+      rich ? (
+        <Box key={key} flexDirection="column">
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1}>
+              {icon && svg(icon, label, 18, 18)}
+              <Text color={txt}>{label}</Text>
+            </Box>
+            <Text bold color={txt}>
+              {value}
+            </Text>
+          </Box>
+          {svg(barSvg(pct, 400, grad ?? [DARK.orange, DARK.claude]), `${label} ${value}`, undefined, BAR_H)}
+          {sub ? <Text {...dimP}>{sub}</Text> : null}
+          {extra ? <Text {...dimP}>{extra}</Text> : null}
+        </Box>
+      ) : (
+      <Box key={key} flexDirection="row">
         <Box width={LABEL_W} flexShrink={0} flexDirection="row" alignItems="center" gap={1}>
           {icon && svg(icon, label, 18, 18)}
           <Text color={txt}>{label}</Text>
         </Box>
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-          {rich ? svg(barSvg(pct, barPx, grad ?? [DARK.orange, DARK.claude]), `${label} ${value}`, barPx, 8) : <Text color={color}>{bar(pct, barW)}</Text>}
+          <Text color={color}>{bar(pct, barW)}</Text>
           <Text color={txt}>
             <Text bold>{value}</Text>
             {sub ? <Text {...dimP}> · {sub}</Text> : null}
@@ -986,10 +1021,10 @@ export const register: Register = on => {
           {extra ? <Text {...dimP}>{extra}</Text> : null}
         </Box>
       </Box>
-    )
+      )
 
     const statusLine = (
-      <Text color={txt}>
+      <Text>
         <Text color={cfg.enabled ? (rich ? DARK.green : 'success') : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
         <Text bold> {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
         <Text {...dimP}>  v{VERSION}</Text>
@@ -999,16 +1034,21 @@ export const register: Register = on => {
     // ส่วนหัว: โลโก้ + ปุ่มเปิด/ปิด, แล้วสถานะ
     const status = (
       <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
-          {rich ? svg(LOGO_SVG, 'Claude', 150, 40) : null}
+        <Box flexDirection="row" justifyContent="space-between" alignItems="center" flexWrap={rich ? 'nowrap' : 'wrap'} gap={1}>
+          {rich ? (
+            <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1}>
+              {svg(LOGO_MARK, 'Claude', 24, 24)}
+              <Text bold>Claude</Text>
+            </Box>
+          ) : null}
           {!rich && statusLine}
           <Button
             key="master"
-            variant={cfg.enabled ? 'secondary' : 'primary'}
+            variant={variant(!cfg.enabled)}
             dimColor={cfg.enabled}
             onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}
           >
-            {cfg.enabled ? 'ปิด sub-agents' : 'เปิด sub-agents'}
+            {lbl(cfg.enabled ? 'ปิด sub-agents' : 'เปิด sub-agents')}
           </Button>
         </Box>
         {rich && statusLine}
@@ -1018,7 +1058,7 @@ export const register: Register = on => {
     )
 
     const tabRow = (
-      <Box flexDirection="row" gap={1}>
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
         {(
           [
             { id: 'models', label: 'โมเดล', hotkey: '1' },
@@ -1029,29 +1069,16 @@ export const register: Register = on => {
           <Button
             key={`tab:${t.id}`}
             hotkey={t.hotkey}
-            variant={t.id === tab ? 'primary' : 'secondary'}
+            variant={variant(t.id === tab)}
+            dimColor={rich && t.id !== tab}
             onPress={() => update($, tabAtom, (): Tab => t.id)}
           >
-            {t.label}
+            {lbl(t.label)}
           </Button>
         ))}
       </Box>
     )
-    const tabs = rich ? (
-      <Box
-        flexDirection="row"
-        marginTop={1}
-        paddingX={1}
-        paddingY={0}
-        borderStyle="round"
-        borderColor={DARK.border}
-        backgroundColor={DARK.card}
-      >
-        {tabRow}
-      </Box>
-    ) : (
-      <Box marginTop={1}>{tabRow}</Box>
-    )
+    const tabs = <Box marginTop={1}>{tabRow}</Box>
 
     const data = (() => {
       const plan = planName(acct)
@@ -1091,12 +1118,14 @@ export const register: Register = on => {
     const { plan, counted, roleRows, maxTok, recent, modelRows, maxModelTok } = data
 
     // วงแหวน usage (rich) หรือแถบแบบเดิม (terminal)
-    const ringPx = Math.round(Math.max(72, Math.min(112, ((cols - 10) / 3) * 7)))
+    const ringN = Math.max(1, usage.limits.length + (usage.contextWindow > 0 ? 1 : 0))
+    const ringPx = ringN <= 3 ? 96 : 80
     const limitGrad = (pct: number, kind: string): [string, string] =>
       pct >= 90 ? [DARK.red, '#f87171'] : pct >= 70 ? [DARK.amber, '#fbbf24'] : kind === 'five_hour' ? ['#22c55e', '#86efac'] : ['#16a34a', '#a3e635']
     const ring = (key: string, pct: number, value: string, label: string, grad: [string, string], sub?: string, extra?: string) => (
-      <Box key={key} flexDirection="column" alignItems="center" flexGrow={1} minWidth={ringPx}>
-        {svg(ringSvg(pct, value, ringPx, grad), `${label} ${value}`, ringPx, ringPx)}
+      <Box key={key} flexDirection="column" alignItems="center" flexGrow={1} flexShrink={1}>
+        {svg(ringSvg(pct, '', ringPx, grad), `${label} ${value}`)}
+        <Text bold>{value}</Text>
         <Text color={txt}>{label}</Text>
         {sub ? <Text {...dimP}>{sub}</Text> : null}
         {extra ? <Text {...dimP}>{extra}</Text> : null}
@@ -1142,10 +1171,10 @@ export const register: Register = on => {
           heading('Usage', undefined, ICON_USAGE),
           usage.limits.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูล (จะขึ้นหลัง Claude ตอบครั้งแรก)</Text> : null,
           rich ? (
-            <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={1}>
+            <Box flexDirection="row" justifyContent="space-around" gap={1} flexWrap="wrap">
               {usage.limits.map(l => {
                 const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
-                return ring(`lim:${l.kind}`, l.percent, `${Math.round(l.percent)}%`, LIMIT_LABEL[l.kind] ?? l.kind, limitGrad(l.percent, l.kind), reset, left)
+                return ring(`lim:${l.kind}`, l.percent, `${Math.round(l.percent)}%`, LIMIT_LABEL[l.kind] ?? l.kind, limitGrad(l.percent, l.kind), left || reset)
               })}
               {usage.contextWindow > 0 &&
                 ring(
@@ -1154,11 +1183,11 @@ export const register: Register = on => {
                   `${Math.round(usage.contextPercent ?? 0)}%`,
                   'Context',
                   [DARK.blue, '#60a5fa'],
-                  `${fmtTok(usage.contextTokens ?? 0)} จาก ${fmtTok(usage.contextWindow)} tokens`,
+                  `${fmtTok(usage.contextTokens ?? 0)} / ${fmtTok(usage.contextWindow)}`,
                 )}
             </Box>
           ) : (
-            <Box flexDirection="column" gap={1} marginTop={1}>
+            <Box flexDirection="column" gap={1}>
               {usage.limits.map(l => {
                 const [reset, left] = fmtReset(l.resetsAt, now, l.kind === 'five_hour')
                 return meter(
@@ -1185,19 +1214,10 @@ export const register: Register = on => {
         ])}
 
         {card('card:models', [
-          <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1} marginTop={rich ? 0 : 2}>
-            <Box flexDirection="row" alignItems="center" gap={1}>
-              {svg(ICON_CUBE, 'models', 18, 18)}
-              <Text bold color={txt}>
-                การใช้ตามโมเดล
-              </Text>
-            </Box>
-            {rangeSelect}
-          </Box>,
-          <Text color={txt}>{fmtTok(modelRows.reduce((t, [, g]) => t + g.main + g.sub, 0))} tokens</Text>,
+          heading('การใช้ตามโมเดล', `รวม ${fmtTok(modelRows.reduce((t, [, g]) => t + g.main + g.sub, 0))} tokens`, ICON_CUBE, rangeSelect),
           modelRows.length === 0 ? <Text {...dimP}>ยังไม่มีข้อมูลในช่วงนี้ (เริ่มนับตั้งแต่ติดตั้งเวอร์ชันนี้)</Text> : null,
           modelRows.length > 0 ? (
-            <Box flexDirection="column" gap={1} marginTop={1}>
+            <Box flexDirection="column" gap={1}>
               {modelRows.map(([k, g]) => {
                 const look = modelLook(k)
                 return meter(
@@ -1219,6 +1239,7 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1} marginTop={1}>
           <Button
             key="refresh"
+            variant="secondary"
             dimColor
             onPress={async () => {
               await refreshUsage($)
@@ -1226,7 +1247,7 @@ export const register: Register = on => {
               await update($, accountAtom, () => a)
             }}
           >
-            รีเฟรช
+            {lbl('รีเฟรช')}
           </Button>
         </Box>
       </Box>
@@ -1236,20 +1257,14 @@ export const register: Register = on => {
     const agentsTab = () => (
       <Box flexDirection="column">
         {card('card:agentUse', [
-          <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1} marginTop={rich ? 0 : 2}>
-            <Box flexDirection="row" alignItems="center" gap={1}>
-              {svg(ICON_USAGE, 'usage', 18, 18)}
-              <Text bold color={txt}>
-                การใช้ sub-agents
-              </Text>
-            </Box>
-            {rangeSelect}
-          </Box>,
-          <Text color={txt}>
-            {counted.length} ครั้ง · {fmtTok(counted.reduce((s, r) => s + totalTok(r), 0))} tokens
-          </Text>,
+          heading(
+            'การใช้ sub-agents',
+            `${counted.length} ครั้ง · ${fmtTok(counted.reduce((s, r) => s + totalTok(r), 0))} tokens`,
+            ICON_USAGE,
+            rangeSelect,
+          ),
           roleRows.length > 0 ? (
-            <Box flexDirection="column" gap={1} marginTop={1}>
+            <Box flexDirection="column" gap={1}>
               {roleRows.map(([k, g]) =>
                 meter(`role:${k}`, k, (g.tok / maxTok) * 100, fmtTok(g.tok), 'claude', `${g.n} ครั้ง · ${[...g.models].join(', ')}`, undefined, undefined, [
                   DARK.accent,
@@ -1261,8 +1276,7 @@ export const register: Register = on => {
         ])}
 
         {card('card:history', [
-          heading('ประวัติล่าสุด'),
-          <Box marginTop={1} />,
+          heading('ประวัติล่าสุด', recent.length > 0 ? `${recent.length} รายการล่าสุด` : undefined),
           recent.length === 0 ? <Text {...dimP}>ยังไม่มี sub-agents ในช่วงนี้</Text> : null,
           ...recent.map(r => {
             const isOn = isLive(r, now)
@@ -1283,34 +1297,29 @@ export const register: Register = on => {
                     ? 'error'
                     : 'inactive'
             return (
-              <Box key={`run:${r.agentId}`} flexDirection="column" marginBottom={1}>
-                <Text color={txt}>
-                  <Text {...dimP}>
-                    {range === 'week' || range === 'all' ? `${fmtDay(r.startedAt)} ` : ''}
-                    {timeTh(r.startedAt)}{' '}
+              <Box key={`run:${r.agentId}`} flexDirection="column">
+                <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+                  <Text color={txt}>
+                    <Text bold>{roleLabel(r.role)}</Text>
+                    <Text {...dimP}> · {modelName(r.model)}</Text>
                   </Text>
-                  <Text bold>{roleLabel(r.role)}</Text>
-                  <Text {...dimP}> · {modelName(r.model)}</Text>
-                  <Text color={stColor}>
-                    {' '}
-                    {STATUS_LABEL[st]}
-                  </Text>
+                  <Text color={stColor}>{STATUS_LABEL[st]}</Text>
+                </Box>
+                <Text color={txt}>{r.description || r.type}</Text>
+                <Text {...dimP}>
+                  {range === 'week' || range === 'all' ? `${fmtDay(r.startedAt)} ` : ''}
+                  {timeTh(r.startedAt)} · {fmtDur(r.durationMs || (isOn ? now - r.startedAt : 0))} · {fmtTok(totalTok(r))} tokens
                 </Text>
                 <Text {...dimP}>
-                  {'      '}
-                  {r.description || r.type}
-                </Text>
-                <Text {...dimP}>
-                  {'      '}
-                  {`${fmtTok(totalTok(r))} tokens (in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}) · ${fmtDur(r.durationMs || (isOn ? now - r.startedAt : 0))}`}
+                  {`in ${fmtTok(r.input)} · cache ${fmtTok(r.cacheRead + r.cacheWrite)} · out ${fmtTok(r.output)}`}
                 </Text>
               </Box>
             )
           }),
         ])}
         <Box flexDirection="row" gap={1} marginTop={1}>
-          <Button key="clear" dimColor onPress={() => setRuns($, () => [])}>
-            ล้างประวัติ
+          <Button key="clear" variant="secondary" dimColor onPress={() => setRuns($, () => [])}>
+            {lbl('ล้างประวัติ')}
           </Button>
         </Box>
       </Box>
@@ -1319,115 +1328,123 @@ export const register: Register = on => {
     // ----- ตั้งค่า role: แถวละ role กระชับ ๆ -----
     const roles = () => (
       <Box flexDirection="column" marginTop={rich ? 0 : 1}>
-        {card(
-          'card:roles',
+        {card('card:roles', [
+          heading('Role', 'กดชื่อเพื่อเปิด/ปิด · เลือกโมเดลและ effort ของแต่ละ role'),
           <Box flexDirection="column" gap={1}>
             {ROLES.map(def => {
               const rule = cfg.roles[def.id]
-              return (
-                <Box key={`row:${def.id}`} flexDirection="row" alignItems="center" gap={1}>
-                  <Box width={18} flexShrink={0}>
+              return field(
+                `row:${def.id}`,
+                <Box flexDirection="row">
                     <Button key={`en:${def.id}`} plain onPress={() => setRole($, def.id, { enabled: !rule.enabled })}>
                       <Text color={rule.enabled ? (rich ? DARK.green : 'success') : 'inactive'}>{rule.enabled ? '●' : '○'}</Text>
-                      <Text bold={rule.enabled} dimColor={!rule.enabled} color={rule.enabled ? txt : undefined}>
+                      <Text bold={rule.enabled} dimColor={!rich && !rule.enabled} color={rich ? (rule.enabled ? txt : mut) : undefined}>
                         {' '}
                         {def.name}
                       </Text>
                     </Button>
-                  </Box>
-                  {rule.enabled ? (
-                    <Box flexDirection="row" gap={1}>
+                </Box>,
+                  rule.enabled ? (
+                    [
                       <Select
                         key={`model:${def.id}`}
                         options={MODEL_OPTS}
                         value={rule.model}
                         onSelect={v => setRole($, def.id, { model: v as ModelChoice })}
-                      />
+                      />,
                       <Select
                         key={`effort:${def.id}`}
                         options={EFFORT_OPTS}
                         value={rule.effort}
                         onSelect={v => setRole($, def.id, { effort: v as EffortChoice })}
-                      />
-                    </Box>
+                      />,
+                    ]
                   ) : (
                     <Text {...dimP}>ไม่ใช้</Text>
-                  )}
-                </Box>
+                  ),
               )
             })}
           </Box>,
-        )}
+        ])}
 
         {card('card:limits', [
           heading('ขีดจำกัด'),
-          <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+          field(
+            'f:saver',
+            'โหมดประหยัด',
             <Select
               key="saver"
               options={SAVER_OPTS}
               value={String(cfg.saverAt)}
               onSelect={v => setConfig($, c => ({ ...c, saverAt: Number(v) }))}
-            />
+            />,
+            'ทุก role ใช้ Haiku เมื่อ usage 5 ชม. ถึงระดับนี้',
+          ),
+          field(
+            'f:parallel',
+            'ทำงานพร้อมกันสูงสุด',
             <Select
               key="maxParallel"
               options={PARALLEL_OPTS}
               value={String(cfg.maxParallel)}
               onSelect={v => setConfig($, c => ({ ...c, maxParallel: Number(v) }))}
-            />
-          </Box>,
-          <Text {...dimP}>โหมดประหยัด: ทุก role เปลี่ยนเป็น Haiku เมื่อ usage ถึงระดับที่เลือก</Text>,
+            />,
+            'จำนวน sub-agent ที่รันพร้อมกันได้',
+          ),
         ])}
 
         {card('card:dedupe', [
-          heading('กันงานซ้ำ', 'ไม่ให้แตก sub-agent ตัวใหม่ไปทำงานเดียวกับตัวที่กำลังทำอยู่หรือเพิ่งเสร็จ'),
-          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" marginTop={1}>
-            <Text {...dimP}>
-              {cfg.dedupe !== false ? 'เปิดอยู่' : 'ปิดอยู่'}
-              {deduped > 0 ? ` · กันไปแล้ว ${deduped} ครั้งใน session นี้` : ''}
-            </Text>
+          heading(
+            'กันงานซ้ำ',
+            `${cfg.dedupe !== false ? 'เปิดอยู่' : 'ปิดอยู่'} · ไม่ให้ sub-agent ตัวใหม่ทำงานซ้ำกับตัวที่กำลังทำหรือเพิ่งเสร็จ${
+              deduped > 0 ? ` · กันไปแล้ว ${deduped} ครั้ง` : ''
+            }`,
+            undefined,
             <Button
               key="dedupeToggle"
-              variant={cfg.dedupe !== false ? 'secondary' : 'primary'}
+              variant={variant(cfg.dedupe === false)}
               dimColor={cfg.dedupe !== false}
               onPress={() => setConfig($, c => ({ ...c, dedupe: c.dedupe === false }))}
             >
-              {cfg.dedupe !== false ? 'ปิดการกัน' : 'เปิดการกัน'}
-            </Button>
-          </Box>,
+              {lbl(cfg.dedupe !== false ? 'ปิดการกัน' : 'เปิดการกัน')}
+            </Button>,
+          ),
         ])}
 
         {card('card:band', [
-          heading('แถบเหนือช่องพิมพ์'),
-          <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap" marginTop={1}>
-            <Text {...dimP}>{cfg.bandHidden ? 'ซ่อนอยู่' : 'แสดงอยู่'}</Text>
+          heading(
+            'แถบเหนือช่องพิมพ์',
+            cfg.bandHidden ? 'ซ่อนอยู่' : 'แสดงอยู่',
+            undefined,
             <Button
               key="bandToggle"
-              variant={cfg.bandHidden ? 'primary' : 'secondary'}
+              variant={variant(cfg.bandHidden === true)}
               dimColor={!cfg.bandHidden}
               onPress={() => setConfig($, c => ({ ...c, bandHidden: !c.bandHidden }))}
             >
-              {cfg.bandHidden ? 'แสดงแถบ' : 'ซ่อนแถบ'}
-            </Button>
-          </Box>,
+              {lbl(cfg.bandHidden ? 'แสดงแถบ' : 'ซ่อนแถบ')}
+            </Button>,
+          ),
         ])}
 
         <Box marginTop={1}>
           <Button
             key="reset"
+            variant="secondary"
             dimColor
             onPress={async () => {
               const v = await setConfig($, c => ({ ...DEFAULT_CONFIG, enabled: c.enabled, bandHidden: c.bandHidden, dedupe: c.dedupe }))
               for (const r of ROLES) await syncAgent($, r.id, v)
             }}
           >
-            คืนค่าเริ่มต้น
+            {lbl('คืนค่าเริ่มต้น')}
           </Button>
         </Box>
       </Box>
     )
 
     return rich ? (
-      <Box flexDirection="column" backgroundColor={DARK.bg} paddingX={2} paddingY={1}>
+      <Box flexDirection="column" width="100%">
         {status}
         {tabs}
         {tab === 'roles' ? roles() : tab === 'agents' ? agentsTab() : modelsTab()}
@@ -1461,6 +1478,9 @@ const DARK = {
   red: '#ef4444',
 }
 
+// รางของแถบ/วงแหวน: เทาโปร่ง เห็นได้ทั้งธีมสว่างและมืด
+const TRACK = 'rgba(148,163,184,0.3)'
+
 const XMLNS = 'xmlns="http://www.w3.org/2000/svg"'
 
 function asterisk(cx: number, cy: number, r: number, color: string, w: number): string {
@@ -1473,7 +1493,7 @@ function asterisk(cx: number, cy: number, r: number, color: string, w: number): 
   return `<path d="${d}" stroke="${color}" stroke-width="${w}" stroke-linecap="round" fill="none"/>`
 }
 
-const LOGO_SVG = `<svg ${XMLNS} width="150" height="40" viewBox="0 0 150 40">${asterisk(18, 20, 16, DARK.claude, 3.4)}<text x="42" y="29" font-family="-apple-system,Segoe UI,sans-serif" font-size="27" font-weight="700" fill="${DARK.text}">Claude</text></svg>`
+const LOGO_MARK = `<svg ${XMLNS} width="24" height="24" viewBox="0 0 36 40">${asterisk(18, 20, 16, DARK.claude, 3.4)}</svg>`
 
 const AVATAR_SVG = `<svg ${XMLNS} width="44" height="44" viewBox="0 0 44 44"><defs><linearGradient id="a" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a4d6e"/><stop offset="1" stop-color="#253550"/></linearGradient></defs><circle cx="22" cy="22" r="22" fill="url(#a)"/><circle cx="22" cy="17" r="7" fill="#e6edf7"/><path d="M9 36c2-7 7-10 13-10s11 3 13 10z" fill="#e6edf7"/></svg>`
 
@@ -1508,10 +1528,13 @@ function modelLook(name: string): { icon: string; grad: [string, string] } {
   )
 }
 
+const BAR_H = 22
+const BAR_Y = 7
+
 function barSvg(pct: number, w: number, [c1, c2]: [string, string]): string {
   const p = Math.max(0, Math.min(100, pct))
   const fill = p > 0 ? Math.max(8, (p / 100) * w) : 0
-  return `<svg ${XMLNS} width="${w}" height="8" viewBox="0 0 ${w} 8"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="${w}" height="8" rx="4" fill="${DARK.track}"/>${fill ? `<rect width="${fill.toFixed(1)}" height="8" rx="4" fill="url(#g)"/>` : ''}</svg>`
+  return `<svg ${XMLNS} width="${w}" height="${BAR_H}" viewBox="0 0 ${w} ${BAR_H}" preserveAspectRatio="none"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect y="${BAR_Y}" width="${w}" height="8" rx="4" fill="${TRACK}"/>${fill ? `<rect y="${BAR_Y}" width="${fill.toFixed(1)}" height="8" rx="4" fill="url(#g)"/>` : ''}</svg>`
 }
 
 function ringSvg(pct: number, value: string, size: number, [c1, c2]: [string, string]): string {
@@ -1521,5 +1544,5 @@ function ringSvg(pct: number, value: string, size: number, [c1, c2]: [string, st
   const c = size / 2
   const len = 2 * Math.PI * r
   const font = Math.round(size * 0.22)
-  return `<svg ${XMLNS} width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="${DARK.track}" stroke-width="${sw.toFixed(1)}"/>${p > 0 ? `<circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="url(#g)" stroke-width="${sw.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${((p / 100) * len).toFixed(1)} ${len.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/>` : ''}<text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" font-family="-apple-system,Segoe UI,sans-serif" font-size="${font}" font-weight="700" fill="${DARK.text}">${value}</text></svg>`
+  return `<svg ${XMLNS} width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="${TRACK}" stroke-width="${sw.toFixed(1)}"/>${p > 0 ? `<circle cx="${c}" cy="${c}" r="${r.toFixed(1)}" fill="none" stroke="url(#g)" stroke-width="${sw.toFixed(1)}" stroke-linecap="round" stroke-dasharray="${((p / 100) * len).toFixed(1)} ${len.toFixed(1)}" transform="rotate(-90 ${c} ${c})"/>` : ''}<text x="${c}" y="${c}" text-anchor="middle" dominant-baseline="central" font-family="-apple-system,Segoe UI,sans-serif" font-size="${font}" font-weight="700" fill="${DARK.text}">${value}</text></svg>`
 }
