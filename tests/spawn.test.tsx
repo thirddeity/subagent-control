@@ -192,11 +192,11 @@ test('กันงานซ้ำ: งานเดียวกับตัวท
 
   await ui.unmount()
 
-  // ปิดการกัน: ผ่าน
+  // กันงานซ้ำเปิดเสมอ ไม่มีสวิตช์ให้ปิด; งานต่างไฟล์ผ่านได้ตามปกติ
   const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui2.press({ key: 'tab:roles' })
-  await ui2.press({ key: 'dedupeToggle' })
-  expect((await review('รีวิว phr', 'Review src/phr/index.ts')).deny).toBeUndefined()
+  expect(await ui2.find({ type: 'Button', key: 'dedupeToggle' })).toBeUndefined()
+  expect((await review('รีวิว zeta', 'Review src/zeta/index.ts')).deny).toBeUndefined()
   await ui2.unmount()
   expect(n).toBe(4)
 })
@@ -238,5 +238,34 @@ test('กันงานซ้ำ: spawn พร้อมกัน, waiting, เ�
   await $.turn.complete({ agentId: 'a1', reason: 'answer', answer: 'ok', isAborted: false, turnId: 't1', durationMs: 10 } as never)
   const again = await sp('advisor', 'ตรวจ batch แรก', 'Review src/a.ts src/b.ts')
   expect(again.deny).toContain('เพิ่งทำเสร็จ')
+  await ui.unmount()
+})
+
+test('role ค้นคว้า: ค่าเริ่มต้น Sonnet, จับงานค้นคว้า/อ่าน docs แต่ไม่จับงานเขียนเอกสาร, อยู่ในคำสั่งร่วมงาน', async ($, on) => {
+  const models: (string | undefined)[] = []
+  on('agent.spawn', (_, e) => {
+    models.push(e.model)
+    return { model: e.model ?? 'x', agentId: `a${models.length}` }
+  })
+  on('tool.describe', (_, e) => ({ description: e.description }))
+  on('store.set', () => ({ value: undefined }))
+  on('agent.register', () => ({ value: undefined }) as never)
+  on('clock.now', () => ({ value: Date.now() }))
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'tab:roles' })
+  // เปลี่ยน researcher เป็น Haiku เพื่อแยกจาก coder (Sonnet) ในผลลัพธ์
+  await ui.select({ key: 'model:researcher', value: 'claude-haiku-5-5' })
+
+  await $.agent.spawn(spawnArgs('general-purpose', 'research how the official docs describe rate limits'))
+  await $.agent.spawn(spawnArgs('general-purpose', 'อ่านเอกสารของ library แล้วสรุป'))
+  await $.agent.spawn(spawnArgs('subagent-control:researcher', 'look up changelog'))
+  await $.agent.spawn(spawnArgs('general-purpose', 'write the README docs section'))
+  expect(models).toEqual(['claude-haiku-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5', 'claude-sonnet-5-5'])
+
+  const text = (await $.tool.describe({ tool: 'Agent', description: 'Launch a new agent.', provider: { plugin: 'engine', tier: 'core' } } as never)).description
+  expect(text).toContain('subagent-control:researcher')
+  expect(text).toContain('researcher')
+  expect(text).toContain('advisor')
   await ui.unmount()
 })

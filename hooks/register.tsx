@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.17'
+const VERSION = '0.1.18'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -50,7 +50,7 @@ const ROLES: RoleDef[] = [
     forModel:
       'Advisor: use BEFORE changing code when a problem needs deep analysis, a design or plan, a code review, or a hard judgment call. Returns advice; does not edit files.',
     prompt:
-      'You are the advisor. Think carefully, weigh trade-offs, and return a clear recommendation, plan or review with concrete file and line references. Do not edit files.',
+      'You are the advisor. Think carefully, weigh trade-offs, and return a clear recommendation, plan or review with concrete file and line references. Build on any researcher or explorer findings in your brief instead of redoing them, and treat what they marked unverified as open. If you lack a fact you need, name it in your report so it can be looked up. Do not edit files.',
     disallowedTools: READ_ONLY,
     defaults: { enabled: true, model: 'claude-opus-5-5', effort: 'high' },
   },
@@ -68,6 +68,24 @@ const ROLES: RoleDef[] = [
     defaults: { enabled: true, model: 'claude-haiku-5-5', effort: 'low' },
   },
   {
+    id: 'researcher',
+    name: 'ค้นคว้า',
+    short: 'ค้นเว็บ · อ่าน docs',
+    purpose: 'หาข้อมูลจริงจากเว็บและเอกสารทางการ แล้วสรุปพร้อมแหล่งอ้างอิง',
+    usedFor: 'งานที่มีคำว่า research / อ่าน docs / ค้นคว้า / หาข้อมูล / changelog',
+    forModel:
+      'Researcher: use to look up real information outside the codebase: read official docs, changelogs and web sources, check how a library or API actually works, compare options. Returns a sourced summary that the advisor and coder can build on; does not edit files.',
+    prompt: [
+      'You are the researcher. Find out how things actually work from primary sources instead of memory: use WebSearch and WebFetch (and any docs or MCP tools you have) and prefer official documentation, changelogs and source repositories over blog posts. Read the pages, do not stop at search snippets.',
+      'Check versions and dates: say which version or date each fact applies to, and flag anything that may be out of date or that sources disagree on.',
+      'Never invent a fact, URL, API name or version. If a page is unreachable or you could not verify something, say so plainly.',
+      'Report back in this shape so the others can reuse it as is: 1) Answer (a few lines). 2) Key facts, each with its source URL and version/date. 3) What is uncertain or unverified. 4) What this means for the task (constraints, gotchas, a recommended approach). Keep it concise; no long quotes from sources.',
+      'You work alongside the other roles: the explorer finds things in the codebase, you find things outside it, the advisor turns both into a plan, the coder implements it. If the task also needs code facts, say exactly what the explorer should look for instead of guessing about this codebase. Do not edit files.',
+    ].join(' '),
+    disallowedTools: READ_ONLY,
+    defaults: { enabled: true, model: 'claude-sonnet-5-5', effort: 'medium' },
+  },
+  {
     id: 'coder',
     name: 'เขียนโค้ด',
     short: 'เขียน · แก้โค้ด',
@@ -76,7 +94,7 @@ const ROLES: RoleDef[] = [
     forModel:
       'Coder: use to implement a well-defined code change (edit or create files) once the plan is clear.',
     prompt:
-      'You are the coder. Implement the requested change exactly, keep edits minimal and consistent with the surrounding code, and report what you changed.',
+      'You are the coder. Implement the requested change exactly, keep edits minimal and consistent with the surrounding code, and report what you changed. Follow the plan and any researcher findings in your brief (API names, versions, gotchas) rather than guessing from memory; if something you need is missing or contradicts the code, say so in your report instead of improvising.',
     defaults: { enabled: true, model: 'claude-sonnet-5-5', effort: 'medium' },
   },
   {
@@ -100,13 +118,13 @@ const DEFAULT_CONFIG: Config = {
   roles: {
     advisor: ROLE_BY_ID.advisor.defaults,
     explorer: ROLE_BY_ID.explorer.defaults,
+    researcher: ROLE_BY_ID.researcher.defaults,
     coder: ROLE_BY_ID.coder.defaults,
     runner: ROLE_BY_ID.runner.defaults,
   },
   maxParallel: 0,
   saverAt: 0,
   bandHidden: false,
-  dedupe: true,
 }
 const EMPTY_USAGE: UsageSnap = { at: 0, startedAt: 0, limits: [], contextWindow: 0 }
 
@@ -175,6 +193,8 @@ function roleOf(type: string, text: string): RoleId | undefined {
   const t = text.toLowerCase()
   if (/\b(test|tests|run|build|lint|typecheck|ci)\b|รัน|เทสต์|ทดสอบ/.test(t)) return 'runner'
   if (/\b(review|design|plan|architect|analy[sz]e|advise|audit)\b|รีวิว|ออกแบบ|วางแผน|วิเคราะห์/.test(t)) return 'advisor'
+  // ค้นคว้านอกโปรเจกต์ (เว็บ/เอกสารทางการ) ต้องเช็กก่อนค้นหาโค้ด และไม่จับคำว่า docs เฉย ๆ เพราะอาจเป็นงานเขียนเอกสาร
+  if (/\b(research|look\s?up|web\s?search|read (the )?(official )?docs?|check (the )?(official )?docs?|official docs?|documentation for|changelog|release notes)\b|ค้นคว้า|หาข้อมูล|อ่าน\s?docs|อ่านเอกสาร|ดูเอกสาร/.test(t)) return 'researcher'
   if (/\b(search|find|explore|locate|investigate|look for)\b|ค้นหา|หาไฟล์|สำรวจ/.test(t)) return 'explorer'
   return 'coder'
 }
@@ -284,7 +304,7 @@ function findDuplicate(
   }
   // งานที่เพิ่งเสร็จ: เฉพาะงานอ่านอย่างเดียว (รีวิว/ค้นหา) ใน session นี้ — รันเทสต์หรือแก้โค้ดซ้ำหลังแก้เป็นเรื่องปกติ
   const g = groupOf(want.type, want.description)
-  if (g !== 'advisor' && g !== 'explorer') return undefined
+  if (g !== 'advisor' && g !== 'explorer' && g !== 'researcher') return undefined
   const activeIds = new Set(live.filter(a => isActive(a.status)).map(a => a.id))
   for (const r of [...runs].reverse()) {
     if (r.status !== 'done' || r.endedAt === undefined || now - r.endedAt > RECENT_MS || activeIds.has(r.agentId)) continue
@@ -490,6 +510,7 @@ async function syncAgent($: EngineInterface, id: RoleId, cfg: Config) {
 
 const WHEN: Record<RoleId, string> = {
   explorer: 'finding where something lives or how parts connect, whenever it means searching or reading more than a couple of files',
+  researcher: 'finding out how something really works outside the codebase: reading official docs, changelogs or web sources, checking a library or API version, comparing options (it returns a sourced summary)',
   advisor: 'a design, plan, code review or hard trade-off before you change code',
   coder: 'an implementation step whose plan is clear, especially independent pieces that can run in parallel',
   runner: 'running tests, builds, linters or long commands and summarizing the failures',
@@ -510,6 +531,8 @@ function delegationPolicy(cfg: Config): string {
     '- Delegate every step that matches a role above; keep only quick single-file edits, one-off commands and the final integration in this thread.',
     '- Prefer these types over the built-in Explore, Plan and general-purpose agents for the same kind of work.',
     '- In plan mode, or whenever you are about to propose a plan or design, have the advisor draft or review it first and say in the plan that it did.',
+    '- Roles hand work to each other through you; sub-agents cannot see one another. A typical flow: researcher (facts from docs and the web) and explorer (facts from the codebase) in parallel -> advisor (plan from both) -> coder (implement) -> runner (verify). Paste the relevant findings, with their sources, into the next agent\'s brief instead of letting it rediscover them.',
+    '- Use the researcher whenever a step depends on how a library, API, tool or standard actually behaves and you are not certain (new versions, unfamiliar docs, breaking changes) before the advisor plans or the coder writes code against it. Treat its unverified items as open questions, not facts. If an advisor or coder reports that it lacks a fact, dispatch the researcher (or explorer) for it and then continue that step with the answer.',
     '- Start independent sub-agents in the same message so they run in parallel; wait for their results instead of redoing their work.',
     '- One agent per task: never start a second agent of the same role on the same task while one is running, and never redo a review or search finished in this session unless the code changed since. Before each spawn, recall which agents are still running (background ones too, and after a context summary) and wait for them or message them with SendMessage instead. A duplicate spawn is denied with the agent it collides with.',
     '- Review each piece once. Re-review only what changed after the review, and say what changed in the brief; never re-dispatch the same review batch.',
@@ -751,7 +774,7 @@ export const register: Register = on => {
 
     const key = taskKey(e.description, e.prompt)
     // agent ลูกที่ sub-agent แตกเอง: ไม่เทียบ (ปัญหางานซ้ำเกิดที่ thread หลัก และลูกส่งข้อความหา agent สายอื่นไม่ได้)
-    const guard = cfg.dedupe !== false && !e.fork && e.parentAgentId === undefined
+    const guard = !e.fork && e.parentAgentId === undefined
     let slot: string | undefined
     if (guard) {
       const runs = await read($, runsAtom)
@@ -1053,6 +1076,7 @@ export const register: Register = on => {
         </Box>
         {rich && statusLine}
         {cfg.enabled && live.length > 0 && <Text {...dimP}>ทำงานอยู่ {live.length} ตัว</Text>}
+        {deduped > 0 && <Text {...dimP}>กันงานซ้ำแล้ว {deduped} ครั้งใน session นี้</Text>}
         {notice && <Text color="warning">⚠ {notice}</Text>}
       </Box>
     )
@@ -1409,24 +1433,6 @@ export const register: Register = on => {
           ),
         ])}
 
-        {card('card:dedupe', [
-          heading(
-            'กันงานซ้ำ',
-            `${cfg.dedupe !== false ? 'เปิดอยู่' : 'ปิดอยู่'} · ไม่ให้ sub-agent ตัวใหม่ทำงานซ้ำกับตัวที่กำลังทำหรือเพิ่งเสร็จ${
-              deduped > 0 ? ` · กันไปแล้ว ${deduped} ครั้ง` : ''
-            }`,
-            undefined,
-            <Button
-              key="dedupeToggle"
-              variant={variant(cfg.dedupe === false)}
-              dimColor={cfg.dedupe !== false}
-              onPress={() => setConfig($, c => ({ ...c, dedupe: c.dedupe === false }))}
-            >
-              {lbl(cfg.dedupe !== false ? 'ปิดการกัน' : 'เปิดการกัน')}
-            </Button>,
-          ),
-        ])}
-
         {card('card:band', [
           heading(
             'แถบเหนือช่องพิมพ์',
@@ -1449,7 +1455,7 @@ export const register: Register = on => {
             variant="secondary"
             dimColor
             onPress={async () => {
-              const v = await setConfig($, c => ({ ...DEFAULT_CONFIG, enabled: c.enabled, bandHidden: c.bandHidden, dedupe: c.dedupe }))
+              const v = await setConfig($, c => ({ ...DEFAULT_CONFIG, enabled: c.enabled, bandHidden: c.bandHidden }))
               for (const r of ROLES) await syncAgent($, r.id, v)
             }}
           >

@@ -1,7 +1,7 @@
 export type Tab = 'models' | 'agents' | 'roles'
 export type HistoryRange = 'session' | 'today' | 'week' | 'all'
 
-export type RoleId = 'advisor' | 'explorer' | 'coder' | 'runner'
+export type RoleId = 'advisor' | 'explorer' | 'researcher' | 'coder' | 'runner'
 export type ModelChoice =
   | 'claude-opus-5-5'
   | 'claude-sonnet-5-5'
@@ -22,8 +22,6 @@ export type Config = {
   saverAt: number
   /** ซ่อนแถบ sub-agents เหนือช่องพิมพ์ (ค่าเก่าที่ไม่มีช่องนี้ = แสดง) */
   bandHidden?: boolean
-  /** กันแตก sub-agent ไปทำงานซ้ำกับตัวที่กำลังทำ/เพิ่งเสร็จ (ค่าเก่าที่ไม่มีช่องนี้ = เปิด) */
-  dedupe?: boolean
 }
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'aborted' | 'denied' | 'unknown'
