@@ -17,7 +17,7 @@ import type {
 
 const PANE = 'subagent-control'
 // release.sh เขียนเลขนี้ให้ตรงกับ .claude-plugin/plugin.json ทุกครั้งที่ปล่อย
-const VERSION = '0.1.18'
+const VERSION = '0.1.19'
 const TITLE = 'sub-agents'
 const AGENT_PREFIX = 'subagent-control:'
 const MAX_RUNS = 500
@@ -886,30 +886,35 @@ export const register: Register = on => {
     const paneOpen = await read($, paneOpenAtom)
     const five = usage.limits.find(l => l.kind === 'five_hour')
     return (
-      <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-        <Text>
-          <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
-          <Text bold> sub-agents</Text>
-          <Text dimColor> · {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
-        </Text>
-        <Button
-          key="band:toggle"
-          variant={cfg.enabled ? 'secondary' : 'primary'}
-          dimColor={cfg.enabled}
-          onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}>
-          {cfg.enabled ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}
-        </Button>
-        {five && <Text dimColor>· usage 5 ชม. {Math.round(five.percent)}%</Text>}
-        <Button
-          key="band:pane"
-          variant={paneOpen ? 'secondary' : 'primary'}
-          dimColor={paneOpen}
-          onPress={() => (paneOpen ? closePane($) : openPane($))}>
-          {paneOpen ? 'ซ่อน' : 'แสดง'}
-        </Button>
-        <Button key="band:hide" plain dimColor onPress={() => hideBand($)}>
-          ✕ ซ่อนแถบ
-        </Button>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+        {/* ซ้าย: สถานะและตัวสวิตช์ของ sub-agents เอง */}
+        <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
+          <Text>
+            <Text color={cfg.enabled ? 'success' : 'inactive'}>{cfg.enabled ? '●' : '○'}</Text>
+            <Text bold> sub-agents</Text>
+            <Text dimColor> · {cfg.enabled ? 'ใช้งานอยู่' : 'ปิดอยู่'}</Text>
+          </Text>
+          <Button
+            key="band:toggle"
+            variant={cfg.enabled ? 'secondary' : 'primary'}
+            dimColor={cfg.enabled}
+            onPress={() => setConfig($, c => ({ ...c, enabled: !c.enabled }))}>
+            {cfg.enabled ? 'ปิด sub-agents' : 'เปิด sub-agents'}
+          </Button>
+          {five && <Text dimColor>· usage 5 ชม. {Math.round(five.percent)}%</Text>}
+        </Box>
+        {/* ขวา: ปุ่มเกี่ยวกับการแสดงผล เรียงจากแผงไปแถบ; ปุ่มซ่อนแถบอยู่ขวาสุดคนเดียว */}
+        <Box flexDirection="row" gap={1} alignItems="center">
+          {/* แผงเปิดอยู่ = ไม่ต้องมีปุ่ม (ปิดได้จากปุ่มปิดของแผงเอง); ปิดอยู่ถึงแสดงปุ่มเปิด */}
+          {!paneOpen && (
+            <Button key="band:pane" variant="primary" onPress={() => openPane($)}>
+              แสดงแผง
+            </Button>
+          )}
+          <Button key="band:hide" plain dimColor onPress={() => hideBand($)}>
+            ✕
+          </Button>
+        </Box>
       </Box>
     )
   })
